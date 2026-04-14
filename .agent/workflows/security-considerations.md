@@ -23,6 +23,6 @@ When implementing Level 4 Tool Permissions:
 
 ### Future Module Architecture (Manifest-Based)
 When third-party modules or external file-loading is introduced:
-- **Manifest Contracts:** Modules must ship with a `manifest.json` declaring exactly what they need (e.g., File I/O, Network access, shared memory).
-- **Explicit Consent:** If a module asks for "Network access to mod servers", present a clear, out-of-band `[Approve/Deny]` consent screen to the user via Telegram showing exactly what was declared in the manifest.
+- **Manifest Contracts:** Modules must ship with a `manifest.json` declaring exactly what they need, mapping capabilities to "Risk Levels" (e.g., Low: Read Time, Medium: Network Access, High: Shell Access/Shared Memory).
+- **Explicit Consent & 2FA:** If a module requests Medium risk, present a clear `[Approve/Deny]` screen via Telegram. If a module requests **High** risk, mandate an **out-of-band 2FA confirmation** (e.g., prompting the local host console for manual input) to prevent compromised Telegram accounts from executing dangerous payloads.
 - **Isolate by Logic, Not Virtualization:** Rely on strict hardcoded path checking and process scoping within standard Node.js limits over heavy virtual machines (like Docker) to preserve "Zero Dependencies" simplicity.

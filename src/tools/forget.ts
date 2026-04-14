@@ -50,7 +50,7 @@ const forget: ToolDefinition = {
     }
 
     // Check if the memory exists first (for a better error message)
-    const existing = getMemory(chatId, args.memory_id);
+    const existing = await getMemory(chatId, args.memory_id);
     if (!existing) {
       return JSON.stringify({
         success: false,
@@ -58,7 +58,7 @@ const forget: ToolDefinition = {
       });
     }
 
-    const deleted = deleteMemory(chatId, args.memory_id);
+    const deleted = await deleteMemory(chatId, args.memory_id);
 
     if (deleted) {
       return JSON.stringify({

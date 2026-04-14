@@ -263,6 +263,8 @@ Named after the elephant AI mascot of the Player2 platform.
 - [ ] File system tool (read/write/list, sandboxed)
 - [ ] MCP bridge (connect external MCP servers)
 - [ ] Tool permission system (See `.agent/workflows/security-considerations.md`)
+- [ ] Out-of-band 2FA for permissions (e.g., Local terminal prompt required to approve catastrophic remote Telegram requests)
+- [ ] Modular Frontends (Abstract Telegram interaction out so users can optionally exclusively use a local CLI or Local HTML GUI to eliminate remote attack surfaces)
 
 ### Level 5 — Heartbeat
 - [ ] Proactive morning briefing

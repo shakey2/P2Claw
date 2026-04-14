@@ -64,7 +64,7 @@ const recall: ToolDefinition = {
 
     // If a search query is provided, use FTS5 search
     if (args.query?.trim()) {
-      const results = searchMemories(chatId, args.query.trim(), limit);
+      const results = await searchMemories(chatId, args.query.trim(), limit);
 
       if (results.length === 0) {
         return JSON.stringify({
@@ -85,7 +85,7 @@ const recall: ToolDefinition = {
     }
 
     // No query — list memories (optionally filtered by category)
-    const results = listMemories(
+    const results = await listMemories(
       chatId,
       args.category ?? undefined,
       limit

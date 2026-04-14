@@ -228,7 +228,7 @@ export function createBot(config: Config): Bot {
   // ── /memories command ──────────────────────────────────────
   bot.command("memories", async (ctx) => {
     const chatId = ctx.chat.id;
-    const count = getMemoryCount(chatId);
+    const count = await getMemoryCount(chatId);
 
     if (count === 0) {
       await ctx.reply(
@@ -239,7 +239,7 @@ export function createBot(config: Config): Bot {
       return;
     }
 
-    const memories = listMemories(chatId, undefined, 20);
+    const memories = await listMemories(chatId, undefined, 20);
     const lines = memories.map(
       (m) => `  • *#${m.id}* (${m.category}) ${m.content}`
     );
@@ -295,7 +295,7 @@ export function createBot(config: Config): Bot {
     const currentState = setupState.get(ctx.chat.id);
     if (currentState !== undefined) {
       // Save memory as core
-      addMemory(ctx.chat.id, `User answer to '${SETUP_QUESTIONS[currentState]}': ${text}`, "core");
+      await addMemory(ctx.chat.id, `User answer to '${SETUP_QUESTIONS[currentState]}': ${text}`, "core");
       
       const nextState = currentState + 1;
       if (nextState < SETUP_QUESTIONS.length) {

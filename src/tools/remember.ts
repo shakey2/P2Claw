@@ -63,14 +63,14 @@ const remember: ToolDefinition = {
     }
 
     // Validate category
-    const category = (args.category as MemoryCategory) || "general";
-    if (!MEMORY_CATEGORIES.includes(category)) {
+    const category = (args.category as string) || "general";
+    if (!MEMORY_CATEGORIES.includes(category as any)) {
       return JSON.stringify({
         error: `Invalid category "${args.category}". Valid: ${MEMORY_CATEGORIES.join(", ")}`,
       });
     }
 
-    const id = addMemory(chatId, args.content.trim(), category);
+    const id = await addMemory(chatId, args.content.trim(), category);
 
     return JSON.stringify({
       success: true,

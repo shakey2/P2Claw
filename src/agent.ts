@@ -109,6 +109,7 @@ function buildSystemPrompt(botName: string, coreMemories: string, semanticMemori
 TOOL USAGE RULES — YOU MUST FOLLOW THESE:
 - When the user says anything like "remember", "remember that", "I want you to remember", "don't forget", or shares a fact/preference they want kept for later, you MUST call the "remember" tool.
 - Do NOT just reply "Okay, I'll remember that" in plain text. You must use the remember tool so the memory is actually saved persistently.
+- CRITICAL: When using the remember tool, ONLY save the raw, objective fact. NEVER pass conversational filler, apologies, or phrases like "I will remember that" or "I'm not sure..." into the memory content!
 - Example:
   User: "Remember that I love ramen."
   → You call the remember tool with content: "User loves ramen" (or similar clear statement).
@@ -169,7 +170,7 @@ export async function processMessage(
   // Get core memory which is ALWAYS injected
   let coreContext = "";
   try {
-    const coreMemories = getCoreContext(chatId);
+    const coreMemories = await getCoreContext(chatId);
     if (coreMemories.length > 0) {
       coreContext = coreMemories.map((m) => `- ${m.content}`).join("\n");
     }
@@ -180,7 +181,7 @@ export async function processMessage(
   // Search for semantic memories relevant to what the user just said
   let semanticContext = "";
   try {
-    const relevantMemories = getRelevantContext(chatId, userMessage, 5);
+    const relevantMemories = await getRelevantContext(chatId, userMessage, 5);
     if (relevantMemories.length > 0) {
       semanticContext = relevantMemories
         .map((m) => `- [#${m.id}] (${m.category}) ${m.content}`)

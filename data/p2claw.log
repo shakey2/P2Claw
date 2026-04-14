@@ -64,3 +64,44 @@
 [2026-04-13T23:58:24.732Z] [DEBUG] Database saved to disk
 [2026-04-13T23:59:15.515Z] [DEBUG] Database saved to disk
 [2026-04-14T00:02:06.824Z] [DEBUG] Database saved to disk
+[2026-04-14T02:07:43.716Z] [INFO] Loaded existing database from C:\P2Claw\data\p2claw.db
+[2026-04-14T02:07:43.719Z] [INFO] Core database schema applied
+[2026-04-14T02:07:43.724Z] [WARN] FTS5 not available, using LIKE fallback: no such module: fts5
+[2026-04-14T02:07:43.727Z] [DEBUG] Database saved to disk
+[2026-04-14T02:09:59.249Z] [INFO] Tool call [1/10]: recall({"category":"preferences","query":"root beer"})
+[2026-04-14T02:11:59.427Z] [DEBUG] Database saved to disk
+[2026-04-14T02:29:59.639Z] [INFO] Loaded existing database from C:\P2Claw\data\p2claw.db
+[2026-04-14T02:29:59.641Z] [INFO] Core database schema applied
+[2026-04-14T02:29:59.644Z] [WARN] FTS5 not available, using LIKE fallback: no such module: fts5
+[2026-04-14T02:29:59.647Z] [DEBUG] Database saved to disk
+[2026-04-14T02:31:01.957Z] [INFO] Tool call [1/10]: recall({"category":"general","limit":10,"query":""})
+[2026-04-14T02:31:20.782Z] [INFO] Tool call [2/10]: forget({"memory_id":9})
+[2026-04-14T02:31:21.796Z] [DEBUG] Database saved to disk
+[2026-04-14T19:40:03.895Z] [INFO] Loaded existing database from C:\P2Claw\data\p2claw.db
+[2026-04-14T19:40:03.897Z] [INFO] Core database schema applied
+[2026-04-14T19:40:03.900Z] [WARN] FTS5 not available, using LIKE fallback: no such module: fts5
+[2026-04-14T19:40:03.902Z] [DEBUG] Database saved to disk
+[2026-04-14T19:40:29.207Z] [INFO] Loaded existing database from C:\P2Claw\data\p2claw.db
+[2026-04-14T19:40:29.209Z] [INFO] Core database schema applied
+[2026-04-14T19:40:29.212Z] [WARN] FTS5 not available, using LIKE fallback: no such module: fts5
+[2026-04-14T19:40:29.214Z] [DEBUG] Database saved to disk
+[2026-04-14T19:40:42.716Z] [INFO] Loaded existing database from C:\P2Claw\data\p2claw.db
+[2026-04-14T19:40:42.718Z] [INFO] Core database schema applied
+[2026-04-14T19:40:42.720Z] [WARN] FTS5 not available, using LIKE fallback: no such module: fts5
+[2026-04-14T19:40:42.723Z] [DEBUG] Database saved to disk
+[2026-04-14T19:40:56.933Z] [INFO] Loaded existing database from C:\P2Claw\data\p2claw.db
+[2026-04-14T19:40:56.935Z] [INFO] Core database schema applied
+[2026-04-14T19:40:56.938Z] [WARN] FTS5 not available, using LIKE fallback: no such module: fts5
+[2026-04-14T19:40:56.940Z] [DEBUG] Database saved to disk
+[2026-04-14T19:41:14.248Z] [INFO] Loaded existing database from C:\P2Claw\data\p2claw.db
+[2026-04-14T19:41:14.249Z] [INFO] Core database schema applied
+[2026-04-14T19:41:14.252Z] [WARN] FTS5 not available, using LIKE fallback: no such module: fts5
+[2026-04-14T19:41:14.255Z] [DEBUG] Database saved to disk
+[2026-04-14T19:41:28.423Z] [INFO] Loaded existing database from C:\P2Claw\data\p2claw.db
+[2026-04-14T19:41:28.426Z] [INFO] Core database schema applied
+[2026-04-14T19:41:28.429Z] [WARN] FTS5 not available, using LIKE fallback: no such module: fts5
+[2026-04-14T19:41:28.431Z] [DEBUG] Database saved to disk
+[2026-04-14T19:41:59.133Z] [INFO] Loaded existing database from C:\P2Claw\data\p2claw.db
+[2026-04-14T19:41:59.135Z] [INFO] Core database schema applied
+[2026-04-14T19:41:59.138Z] [WARN] FTS5 not available, using LIKE fallback: no such module: fts5
+[2026-04-14T19:41:59.141Z] [DEBUG] Database saved to disk
