@@ -215,3 +215,55 @@ export async function transcribeAudio(
   const data = (await res.json()) as WhisperTranscriptionResponse;
   return data.text?.trim() ?? "";
 }
+
+// ── Text-to-Speech via Player2 ──────────────────────────────────
+
+export interface SpeechResponse {
+  data?: string;
+  message?: string;
+}
+
+/**
+ * Generates speech from text using Player2's TTS engine.
+ * 
+ * @param text The text to convert to speech.
+ * @param playInApp If true, audio plays on the host PC asynchronously and returns null. If false, returns a base64 mp3 string.
+ */
+export async function generateSpeech(text: string, playInApp: boolean): Promise<string | null> {
+  const payload = {
+    text,
+    play_in_app: playInApp,
+    speed: 1.0
+  };
+
+  const res = await fetch(`${PLAYER2_BASE}/tts/speak`, {
+    method: "POST",
+    headers: { 
+      "player2-game-key": _resolvedKey,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    let errorMsg = res.statusText;
+    try {
+      const errorData = await res.json();
+      if (errorData.message) errorMsg = errorData.message;
+    } catch (e) {
+      // Ignore if not JSON
+    }
+    
+    // Attach status to error so caller can uniquely identify 402 Patron constraints
+    const err = new Error(`TTS failed: ${errorMsg}`);
+    (err as any).status = res.status;
+    throw err;
+  }
+
+  if (playInApp) {
+    return null; // The Player2 engine is playing the audio on desktop
+  }
+
+  const data = (await res.json()) as SpeechResponse;
+  return data.data ?? null;
+}

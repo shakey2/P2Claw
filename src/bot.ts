@@ -9,10 +9,10 @@
  * Uses long-polling only. No web server. No exposed ports.
  */
 
-import { Bot } from "grammy";
+import { Bot, InputFile } from "grammy";
 import type { Config } from "./config.js";
 import { processMessage, clearHistory, getHistoryLength, setActiveProfile, getActiveProfile, compactHistory } from "./agent.js";
-import { checkHealth, getJoules, listProfiles, transcribeAudio } from "./player2.js";
+import { checkHealth, getJoules, listProfiles, transcribeAudio, generateSpeech } from "./player2.js";
 import { getToolCount } from "./tools/registry.js";
 import { listMemories, getMemoryCount, addMemory } from "./memory/index.js";
 import { log } from "./logger.js";
@@ -40,7 +40,10 @@ export function createBot(config: Config): Bot {
     await next();
   });
 
-  // ── Setup State Machine ─────────────────────────────────────
+
+
+  // ── Voice & Setup State ──────────────────────────────────────
+  const voiceMode = new Map<number, "off" | "tg" | "pc">();
   const setupState = new Map<number, number>();
   const SETUP_QUESTIONS = [
     "What should I call you?",
@@ -81,11 +84,31 @@ export function createBot(config: Config): Bot {
       `  /profile — View/switch AI profiles\n` +
       `  /memories — List stored memories\n` +
       `  /compact — Summarize conversation history\n` +
+      `  /voice — Configure voice output\n` +
       `  /clear — Reset conversation history\n\n` +
       `I can remember things you tell me across conversations. ` +
       `Just send me a message to get started!`,
       { parse_mode: "Markdown" }
     );
+  });
+
+  // ── /voice command ──────────────────────────────────────────
+  bot.command("voice", async (ctx) => {
+    const args = ctx.match?.trim().toLowerCase();
+    if (args === "off" || args === "tg" || args === "pc") {
+      voiceMode.set(ctx.chat.id, args);
+      await ctx.reply(`🎙️ Voice Mode set to: *${args}*`, { parse_mode: "Markdown" });
+    } else {
+      const current = voiceMode.get(ctx.chat.id) || "off";
+      await ctx.reply(
+        `🎙️ *Current Voice Mode*: ${current}\n\n` +
+        `*Usage*: /voice <off | tg | pc>\n` +
+        `  • \`off\`  : Text only (Default)\n` +
+        `  • \`tg\`   : Ellie sends Voice Messages to Telegram\n` +
+        `  • \`pc\`   : Audio plays aloud on host speakers`,
+        { parse_mode: "Markdown" }
+      );
+    }
   });
 
   // ── /status command ─────────────────────────────────────────
@@ -318,6 +341,28 @@ export function createBot(config: Config): Bot {
           }
         }
         console.log(`   ✓ Reply sent to Telegram`);
+
+        // Handle possible voice output
+        const mode = voiceMode.get(ctx.chat.id) || "off";
+        if (mode !== "off") {
+          await ctx.replyWithChatAction("record_voice");
+          try {
+            console.log(`   → Triggering TTS (mode: ${mode})`);
+            const speechData = await generateSpeech(response, mode === "pc");
+            if (mode === "tg" && speechData) {
+              const buffer = Buffer.from(speechData, "base64");
+              await ctx.replyWithVoice(new InputFile(buffer));
+              console.log(`   ✓ Voice memo sent to Telegram`);
+            }
+          } catch (err: any) {
+            if (err.status === 402 || (err.message && err.message.toLowerCase().includes("patron"))) {
+               await ctx.reply("⚠️ *Voice Error*: The current AI voice is a premium ElevenLabs model requiring Patron status on Player2. Free users should switch to the 'Kokoro' voice in the Player2 App settings.", { parse_mode: "Markdown" });
+            } else {
+               console.error("❌ TTS Error:", err);
+               await ctx.reply(`⚠️ *Voice Error*: ${err.message || "Failed to generate speech."}`, { parse_mode: "Markdown" });
+            }
+          }
+        }
       } else {
         console.log(`   ⚠️  Agent returned empty response`);
         await ctx.reply("🤔 I didn't get a response. Please try again.");
