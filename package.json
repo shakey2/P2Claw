@@ -1,0 +1,30 @@
+{
+  "name": "p2claw",
+  "version": "1.0.0",
+  "description": "A lean, secure personal AI agent powered by Player2, controlled via Telegram.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc"
+  },
+  "keywords": [
+    "telegram",
+    "ai",
+    "agent",
+    "player2",
+    "bot"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "grammy": "^1.35.0",
+    "openai": "^4.85.0",
+    "sql.js": "^1.14.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
