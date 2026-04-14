@@ -284,9 +284,9 @@ Named after the elephant AI mascot of the Player2 platform.
 
 ## 7. Licensing
 
-**Source Available** — The source code is publicly readable but not freely licensed for redistribution. The embedded Player2 Game Key is a shared application credential. Unauthorized redistribution or extraction of the key is prohibited.
+**Source-Available** — This project is not MIT/open source. The source is visible for transparency and auditability.
 
-> Note: This is not MIT/open source. The source is visible for transparency and auditability, but the distributed application includes proprietary credentials.
+The canonical license text is in `LICENSE`. In particular, it includes a **Player2 key restriction** intended to prevent redistributing a Player2-connected build that swaps out the embedded Player2 developer attribution key stored in `src/security.ts` (`_enc`).
 
 ---
 

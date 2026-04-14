@@ -1,21 +1,45 @@
-MIT License
+P2 Claw License (Source-Available with Player2 Key Restriction)
 
 Copyright (c) 2026 Zardov
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This license governs use of the P2 Claw software and associated documentation
+(the "Software"). The Software is source-available. It is NOT licensed under
+the MIT License or any other OSI-approved open source license.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. Permissions
+
+Subject to the restriction in Section 2, permission is hereby granted, free of
+charge, to any person obtaining a copy of the Software to use, copy, modify,
+merge, publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so.
+
+2. Player2 Key Restriction (Revenue / Attribution Protection)
+
+The Software includes functionality to interface with the Player2 platform/API.
+To do so, it contains an embedded application credential / developer attribution
+identifier (the "Player2 Game Key"), stored in obfuscated form in:
+
+  - src/security.ts (the embedded encoded array named "_enc")
+
+If you distribute (including publish, provide downloads, sell, or otherwise make
+available) any version of the Software that connects to, interfaces with, or
+utilizes the Player2 platform/API, you may NOT alter, replace, remove, or bypass
+the embedded Player2 Game Key in src/security.ts, nor distribute a version
+configured to use a different Player2 developer key for Player2 connectivity.
+
+This restriction is intended to prevent republishing on the Player2 platform
+in a way that redirects Player2 revenue/attribution away from the original
+developer of P2 Claw.
+
+3. Disclaimer of Warranty
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+4. Limitation of Liability
+
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.

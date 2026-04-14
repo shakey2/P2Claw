@@ -149,4 +149,4 @@ This is **not** needed for end users.
 
 ## 📜 License
 
-Source Available — see [DESIGN.md](DESIGN.md) §7 for details.
+Source-available — see `LICENSE`.
