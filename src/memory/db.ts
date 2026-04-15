@@ -110,6 +110,14 @@ function createSchema(db: Database): void {
     );
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_preferences (
+      chat_id INTEGER PRIMARY KEY NOT NULL,
+      voice_mode TEXT NOT NULL DEFAULT 'off',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
   log.info("Core database schema applied");
 }
 

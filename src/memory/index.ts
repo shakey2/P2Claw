@@ -5,6 +5,7 @@
  * Underneath, requests are routed to the dynamically active Memory Provider.
  */
 
+import type { VoiceOutputMode } from "../config.js";
 import { initDatabase, saveDatabase, closeDatabase, isFts5Available } from "./db.js";
 import * as RawStore from "./store.js";
 import { IMemoryProvider, Memory, MemoryCategory } from "./types.js";
@@ -74,4 +75,13 @@ export async function getCoreContext(chatId: number): Promise<Memory[]> {
 
 export async function getMemoryCount(chatId: number): Promise<number> {
   return activeProvider.getMemoryCount(chatId);
+}
+
+/** Per-chat voice output mode (persisted in SQLite). */
+export async function getChatVoiceMode(chatId: number): Promise<VoiceOutputMode | null> {
+  return RawStore.getChatVoiceMode(chatId);
+}
+
+export async function setChatVoiceMode(chatId: number, mode: VoiceOutputMode): Promise<boolean> {
+  return RawStore.setChatVoiceMode(chatId, mode);
 }

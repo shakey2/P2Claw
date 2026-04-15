@@ -24,6 +24,26 @@ const MAX_LOG_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 type LogLevel = "ERROR" | "WARN" | "INFO" | "DEBUG";
 
 /**
+ * Redacts sensitive identifiers from file logs.
+ *
+ * Intention: log files (data/p2claw.log) are meant to be shareable for support,
+ * so we remove Telegram identifiers there. Console output remains unchanged.
+ */
+function redactForFileLog(message: string): string {
+  // Redact Telegram-style numeric IDs when labeled as user/chat ids.
+  // Keep this conservative to avoid mangling unrelated numbers.
+  return message
+    .replace(
+      /\b(user(?:\s*id)?|userid|chat(?:\s*id)?|chatid)\b([^\d]{0,20})(\d{5,15})\b/gi,
+      (_m, label: string, sep: string) => `${label}${sep}[REDACTED]`
+    )
+    .replace(
+      /\b(unauthorized user)\b([^\d]{0,20})(\d{5,15})\b/gi,
+      (_m, label: string, sep: string) => `${label}${sep}[REDACTED]`
+    );
+}
+
+/**
  * Formats and writes a log entry to the log file.
  */
 function write(level: LogLevel, message: string): void {
@@ -46,7 +66,8 @@ function write(level: LogLevel, message: string): void {
       }
     }
 
-    const entry = `[${timestamp()}] [${level}] ${message}\n`;
+    const safeMessage = redactForFileLog(message);
+    const entry = `[${timestamp()}] [${level}] ${safeMessage}\n`;
     appendFileSync(LOG_PATH, entry, "utf-8");
   } catch {
     // Logger should never crash the app.

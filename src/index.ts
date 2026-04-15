@@ -47,6 +47,7 @@ async function boot(): Promise<void> {
   console.log(`   ✓ Allowed users: ${config.allowedUserIds.join(", ")}`);
   console.log(`   ✓ Max agent iterations: ${config.maxAgentIterations}`);
   console.log(`   ✓ Profiles: ${config.useProfiles ? "Enabled" : "Disabled"}`);
+  console.log(`   ✓ Default voice output: ${config.defaultVoiceMode} (per-chat: /voice)`);
 
   // ── Step 2: Resolve API credential ────────────────────────────
   console.log("\n🔑 Resolving Player2 credentials...");

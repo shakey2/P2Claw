@@ -6,6 +6,7 @@
  * chats. Write operations trigger a debounced save to disk.
  */
 
+import type { VoiceOutputMode } from "../config.js";
 import { getDb, scheduleSave, isFts5Available } from "./db.js";
 
 // ── Types ───────────────────────────────────────────────────────
@@ -297,6 +298,54 @@ export function getMemoryCount(chatId: number): number {
     [chatId]
   );
   return (result[0]?.values[0]?.[0] as number) ?? 0;
+}
+
+// ── Chat preferences (per Telegram chat) ───────────────────────
+
+/**
+ * Returns stored voice output mode for a chat, or null if unset.
+ */
+export function getChatVoiceMode(chatId: number): VoiceOutputMode | null {
+  try {
+    const db = getDb();
+    const stmt = db.prepare(
+      `SELECT voice_mode FROM chat_preferences WHERE chat_id = ?`
+    );
+    stmt.bind([chatId]);
+    if (!stmt.step()) {
+      stmt.free();
+      return null;
+    }
+    const row = stmt.getAsObject() as { voice_mode: string };
+    stmt.free();
+    const m = row.voice_mode?.toLowerCase();
+    if (m === "off" || m === "tg" || m === "pc") return m;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persists voice output mode for a chat. Returns false if the database is unavailable.
+ */
+export function setChatVoiceMode(chatId: number, mode: VoiceOutputMode): boolean {
+  try {
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO chat_preferences (chat_id, voice_mode, updated_at)
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(chat_id) DO UPDATE SET
+        voice_mode = excluded.voice_mode,
+        updated_at = excluded.updated_at
+    `);
+    stmt.run([chatId, mode]);
+    stmt.free();
+    scheduleSave();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────

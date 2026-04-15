@@ -10,12 +10,143 @@
  */
 
 import { Bot, InputFile } from "grammy";
-import type { Config } from "./config.js";
+import type { Context } from "grammy";
+import type { Config, VoiceOutputMode } from "./config.js";
 import { processMessage, clearHistory, getHistoryLength, setActiveProfile, getActiveProfile, compactHistory } from "./agent.js";
-import { checkHealth, getJoules, listProfiles, transcribeAudio, generateSpeech } from "./player2.js";
+import {
+  checkHealth,
+  getJoules,
+  listProfiles,
+  transcribeAudio,
+  generateSpeech,
+  splitTextForPlayer2Tts,
+  PLAYER2_TTS_MAX_TEXT_CHARS,
+} from "./player2.js";
 import { getToolCount } from "./tools/registry.js";
-import { listMemories, getMemoryCount, addMemory } from "./memory/index.js";
+import {
+  listMemories,
+  getMemoryCount,
+  addMemory,
+  getChatVoiceMode,
+  setChatVoiceMode,
+} from "./memory/index.js";
 import { log } from "./logger.js";
+
+/**
+ * Player2 TTS chunking: `/v1/tts/speak` fails on long text (often HTTP 500).
+ * We split to `PLAYER2_TTS_MAX_TEXT_CHARS` before each API call. Telegram
+ * sends one voice note per chunk; `pc` plays each chunk in sequence via
+ * Player2. A future local HTML UI can call the same splitter or stream differently.
+ */
+const MAX_PLAYER2_TTS_CHUNKS_PER_REPLY = 36;
+
+/**
+ * Effective voice mode: per-chat DB preference, else `.env` default.
+ */
+async function effectiveVoiceMode(config: Config, chatId: number): Promise<VoiceOutputMode> {
+  try {
+    const stored = await getChatVoiceMode(chatId);
+    if (stored !== null) return stored;
+  } catch {
+    /* database unavailable */
+  }
+  return config.defaultVoiceMode;
+}
+
+async function replyWithTtsError(ctx: Context, err: unknown): Promise<void> {
+  const anyErr = err as { status?: number; message?: string };
+  if (
+    anyErr.status === 402 ||
+    (anyErr.message && anyErr.message.toLowerCase().includes("patron"))
+  ) {
+    await ctx.reply(
+      "⚠️ *Voice Error*: The current AI voice is a premium ElevenLabs model requiring Patron status on Player2. Free users should switch to the 'Kokoro' voice in the Player2 App settings.",
+      { parse_mode: "Markdown" }
+    );
+  } else {
+    console.error("❌ TTS Error:", err);
+    await ctx.reply(
+      `⚠️ *Voice Error*: ${anyErr.message || "Failed to generate speech."}`,
+      { parse_mode: "Markdown" }
+    );
+  }
+}
+
+/**
+ * Sends TTS after an assistant text reply (Telegram voice note or Player2 speakers).
+ * Uses assistant plain text only (no transcript prefix).
+ */
+async function maybeSendTtsAfterReply(
+  ctx: Context,
+  assistantPlainText: string,
+  mode: VoiceOutputMode
+): Promise<void> {
+  const trimmed = assistantPlainText.trim();
+  if (mode === "off" || !trimmed) return;
+
+  const chunks = splitTextForPlayer2Tts(trimmed);
+  const limited = chunks.slice(0, MAX_PLAYER2_TTS_CHUNKS_PER_REPLY);
+  const omitted = chunks.length - limited.length;
+
+  if (mode === "pc") {
+    await ctx.replyWithChatAction("record_voice");
+    try {
+      for (let i = 0; i < limited.length; i++) {
+        const chunk = limited[i];
+        if (!chunk.trim()) continue;
+        console.log(
+          `   → TTS Player2 (pc) chunk ${i + 1}/${limited.length} (${chunk.length} chars, max ${PLAYER2_TTS_MAX_TEXT_CHARS})`
+        );
+        await generateSpeech(chunk, true);
+      }
+      if (omitted > 0) {
+        console.warn(
+          `   ⚠️ TTS (pc): omitted ${omitted} chunk(s) after cap — full text was sent as messages above`
+        );
+      }
+    } catch (err: unknown) {
+      await replyWithTtsError(ctx, err);
+    }
+    return;
+  }
+
+  // mode === "tg" — one Telegram voice note per Player2-sized chunk
+  try {
+    for (let i = 0; i < limited.length; i++) {
+      const chunk = limited[i];
+      if (!chunk.trim()) continue;
+
+      console.log(
+        `   → TTS Telegram chunk ${i + 1}/${limited.length} (${chunk.length} chars, max ${PLAYER2_TTS_MAX_TEXT_CHARS})`
+      );
+      await ctx.replyWithChatAction("record_voice");
+      const speechData = await generateSpeech(chunk, false);
+      if (speechData) {
+        const buffer = Buffer.from(speechData, "base64");
+        await ctx.replyWithVoice(new InputFile(buffer));
+      }
+    }
+
+    if (omitted > 0) {
+      await ctx
+        .reply(
+          `_(Voice: ${omitted} segment(s) not spoken — full answer is in the text above.)_`,
+          { parse_mode: "Markdown" }
+        )
+        .catch(() =>
+          ctx.reply(
+            "Voice: some segments were not spoken; the full answer is in the text above."
+          )
+        );
+    }
+
+    console.log(
+      `   ✓ Voice memo(s) sent to Telegram (${limited.length} part(s)${omitted ? `, ${omitted} omitted` : ""})`
+    );
+  } catch (err: unknown) {
+    await replyWithTtsError(ctx, err);
+  }
+}
 
 /**
  * Creates and configures the Telegram bot.
@@ -42,8 +173,7 @@ export function createBot(config: Config): Bot {
 
 
 
-  // ── Voice & Setup State ──────────────────────────────────────
-  const voiceMode = new Map<number, "off" | "tg" | "pc">();
+  // ── Setup State ──────────────────────────────────────────────
   const setupState = new Map<number, number>();
   const SETUP_QUESTIONS = [
     "What should I call you?",
@@ -96,16 +226,26 @@ export function createBot(config: Config): Bot {
   bot.command("voice", async (ctx) => {
     const args = ctx.match?.trim().toLowerCase();
     if (args === "off" || args === "tg" || args === "pc") {
-      voiceMode.set(ctx.chat.id, args);
-      await ctx.reply(`🎙️ Voice Mode set to: *${args}*`, { parse_mode: "Markdown" });
+      const ok = await setChatVoiceMode(ctx.chat.id, args);
+      if (!ok) {
+        await ctx.reply(
+          "⚠️ Could not save voice preference (database unavailable). Check that memory init succeeded, then try again."
+        );
+        return;
+      }
+      await ctx.reply(
+        `🎙️ Voice Mode set to: *${args}* (saved for this chat)`,
+        { parse_mode: "Markdown" }
+      );
     } else {
-      const current = voiceMode.get(ctx.chat.id) || "off";
+      const current = await effectiveVoiceMode(config, ctx.chat.id);
       await ctx.reply(
         `🎙️ *Current Voice Mode*: ${current}\n\n` +
         `*Usage*: /voice <off | tg | pc>\n` +
-        `  • \`off\`  : Text only (Default)\n` +
-        `  • \`tg\`   : Ellie sends Voice Messages to Telegram\n` +
-        `  • \`pc\`   : Audio plays aloud on host speakers`,
+        `  • \`off\`  : Text only\n` +
+        `  • \`tg\`   : Voice note on Telegram (after each reply)\n` +
+        `  • \`pc\`   : Audio on host via Player2 App\n\n` +
+        `Default for new chats: \`${config.defaultVoiceMode}\` (\`DEFAULT_VOICE_MODE\` in \`.env\`).`,
         { parse_mode: "Markdown" }
       );
     }
@@ -141,6 +281,9 @@ export function createBot(config: Config): Bot {
     lines.push(
       `💬 Conversation history: ${getHistoryLength(ctx.chat.id)} messages`
     );
+
+    const voiceOut = await effectiveVoiceMode(config, ctx.chat.id);
+    lines.push(`🎙️ Voice output: ${voiceOut} (/voice to change)`);
 
     await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   });
@@ -342,27 +485,8 @@ export function createBot(config: Config): Bot {
         }
         console.log(`   ✓ Reply sent to Telegram`);
 
-        // Handle possible voice output
-        const mode = voiceMode.get(ctx.chat.id) || "off";
-        if (mode !== "off") {
-          await ctx.replyWithChatAction("record_voice");
-          try {
-            console.log(`   → Triggering TTS (mode: ${mode})`);
-            const speechData = await generateSpeech(response, mode === "pc");
-            if (mode === "tg" && speechData) {
-              const buffer = Buffer.from(speechData, "base64");
-              await ctx.replyWithVoice(new InputFile(buffer));
-              console.log(`   ✓ Voice memo sent to Telegram`);
-            }
-          } catch (err: any) {
-            if (err.status === 402 || (err.message && err.message.toLowerCase().includes("patron"))) {
-               await ctx.reply("⚠️ *Voice Error*: The current AI voice is a premium ElevenLabs model requiring Patron status on Player2. Free users should switch to the 'Kokoro' voice in the Player2 App settings.", { parse_mode: "Markdown" });
-            } else {
-               console.error("❌ TTS Error:", err);
-               await ctx.reply(`⚠️ *Voice Error*: ${err.message || "Failed to generate speech."}`, { parse_mode: "Markdown" });
-            }
-          }
-        }
+        const mode = await effectiveVoiceMode(config, ctx.chat.id);
+        await maybeSendTtsAfterReply(ctx, response, mode);
       } else {
         console.log(`   ⚠️  Agent returned empty response`);
         await ctx.reply("🤔 I didn't get a response. Please try again.");
@@ -461,6 +585,9 @@ export function createBot(config: Config): Bot {
         }
       }
       console.log(`   ✓ Voice reply sent to Telegram`);
+
+      const mode = await effectiveVoiceMode(config, ctx.chat.id);
+      await maybeSendTtsAfterReply(ctx, response, mode);
 
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";

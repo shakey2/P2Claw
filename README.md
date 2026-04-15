@@ -40,6 +40,7 @@ Edit your `.env` file:
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Telegram → [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token |
 | `TELEGRAM_ALLOWED_USER_IDS` | Telegram → [@userinfobot](https://t.me/userinfobot) → it replies with your numeric ID |
+| `DEFAULT_VOICE_MODE` | Optional. `off` (default), `tg` (voice note after replies), or `pc` (speak via Player2 on this PC). Per-chat override: `/voice` |
 
 That's it. The Player2 API connection is built in — just make sure the Player2 App is running.
 
@@ -59,7 +60,12 @@ That's it. The Player2 API connection is built in — just make sure the Player2
 | `/start` | Welcome message and bot info |
 | `/status` | Check Player2 health, joule balance, active profile |
 | `/profile` | List AI profiles or switch (`/profile <name>`) |
+| `/setup` | Guided setup that stores a few “core” memories (your name, purpose, tone). Use `/cancel` to abort. |
+| `/memories` | List stored memories (and how to forget one) |
+| `/compact` | Summarize older conversation history to free context space |
+| `/voice` | Configure voice output: `/voice off \| tg \| pc` (saved per chat; survives restarts) |
 | `/clear` | Reset conversation history |
+| `/cancel` | Cancel an in-progress `/setup` session |
 
 ## 🎭 AI Profiles (Patron Feature)
 

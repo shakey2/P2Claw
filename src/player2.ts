@@ -224,6 +224,48 @@ export interface SpeechResponse {
 }
 
 /**
+ * Player2 `/v1/tts/speak` may return 5xx on long payloads. Split text into
+ * smaller segments before calling `generateSpeech` (Telegram voice notes,
+ * in-app playback, or any future UI).
+ *
+ * Tune if Player2 documents a higher safe limit.
+ */
+export const PLAYER2_TTS_MAX_TEXT_CHARS = 1200;
+
+/**
+ * Splits plain text at newlines / spaces / hard boundaries (same strategy as
+ * Telegram message chunking) so each segment is at most `maxChunkChars`.
+ */
+export function splitTextForPlayer2Tts(
+  text: string,
+  maxChunkChars: number = PLAYER2_TTS_MAX_TEXT_CHARS
+): string[] {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+
+  const chunks: string[] = [];
+  let remaining = normalized;
+
+  while (remaining.length > maxChunkChars) {
+    let splitIndex = remaining.lastIndexOf("\n", maxChunkChars);
+    if (splitIndex === -1 || splitIndex < maxChunkChars / 2) {
+      splitIndex = remaining.lastIndexOf(" ", maxChunkChars);
+    }
+    if (splitIndex === -1 || splitIndex < maxChunkChars / 2) {
+      splitIndex = maxChunkChars;
+    }
+    chunks.push(remaining.slice(0, splitIndex));
+    remaining = remaining.slice(splitIndex).trimStart();
+  }
+
+  if (remaining) {
+    chunks.push(remaining);
+  }
+
+  return chunks;
+}
+
+/**
  * Generates speech from text using Player2's TTS engine.
  * 
  * @param text The text to convert to speech.

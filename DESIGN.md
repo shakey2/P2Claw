@@ -135,7 +135,7 @@ Player2 recommends pinging `GET /v1/health` every 60 seconds for time-spent trac
 | `GET /v1/joules` | Credit balance | 1 ✅ |
 | `GET /v1/ai_profiles` | List profiles | 1 ✅ |
 | `POST /v1/stt/whisper/audio/transcriptions` | Whisper STT (voice messages) | 1 ✅ |
-| `POST /v1/tts/speak` | Text-to-speech (base64 mp3) | 3 |
+| `POST /v1/tts/speak` | Text-to-speech (base64 mp3) | 3 ✅ |
 | `POST /v1/image/generate` | Image generation | Future |
 
 ---
@@ -254,9 +254,9 @@ Named after the elephant AI mascot of the Player2 platform.
 - [x] Context pruning (auto-summarize + `/compact` command)
 - [x] Markdown personality config (`data/personality.md`)
 
-### Level 3 — Voice Output
-- [ ] Voice message output (TTS via Player2 `/v1/tts/speak`)
-- [ ] Voice preference settings
+### Level 3 — Voice Output ✅
+- [x] Voice message output (TTS via Player2 `/v1/tts/speak`)
+- [x] Voice preference settings (per-chat persistence in SQLite + `DEFAULT_VOICE_MODE` in `.env`)
 
 ### Level 4 — Tools & MCP
 - [ ] Shell command tool (with confirmation for dangerous ops)
@@ -315,7 +315,8 @@ Significant design decisions, recorded so future-us (or future AI) knows the **w
 | 2026-04-12 | Debounced database persistence (1s) | sql.js is in-memory only — we manage disk writes ourselves. Debounced save (1s after last write) + immediate save on shutdown balances data safety with disk I/O. For a personal assistant's memory database, this is more than adequate. |
 | 2026-04-12 | Markdown personality config (`data/personality.md`) | Human-readable, git-friendly personality customization without touching source code. Aligns with §2.5 (code readability / inspectability) and §2.6 (open architecture). Not a replacement for SQLite memory — just for personality/prompt config. |
 | 2026-04-12 | Context pruning via LLM summarization | Hard-trimming old messages loses context permanently. Summarizing via the LLM preserves key facts in a compact form. Auto-triggers at 40 messages; manual via `/compact`. The summarization call costs joules but is infrequent. |
+| 2026-04-14 | Level 3 voice parity + persisted preferences | TTS after voice-in replies matches text-in; `/voice` stored per chat in SQLite with `DEFAULT_VOICE_MODE` fallback in `.env`. |
 
 ---
 
-*Last updated: 2026-04-12*
+*Last updated: 2026-04-14*

@@ -8,6 +8,9 @@
 
 import "dotenv/config";
 
+/** Text-to-speech delivery: off, Telegram voice note, or Player2 app speakers */
+export type VoiceOutputMode = "off" | "tg" | "pc";
+
 export interface Config {
   /** Player2 Game Client ID (resolved by security module) */
   player2GameKey: string;
@@ -29,6 +32,9 @@ export interface Config {
 
   /** Bot display name */
   botName: string;
+
+  /** Default voice output when a chat has no stored preference */
+  defaultVoiceMode: VoiceOutputMode;
 }
 
 // ── Hard-coded absolute safety ceiling ──────────────────────────
@@ -40,6 +46,17 @@ function fatal(message: string): never {
   console.error(`╚══════════════════════════════════════════════════════════════╝`);
   console.error(`\n  ${message}\n`);
   process.exit(1);
+}
+
+function parseVoiceOutputMode(raw: string | undefined): VoiceOutputMode {
+  const v = (raw ?? "off").trim().toLowerCase();
+  if (v === "off" || v === "none" || v === "false" || v === "0") return "off";
+  if (v === "tg" || v === "telegram" || v === "voice") return "tg";
+  if (v === "pc" || v === "speaker" || v === "local" || v === "app") return "pc";
+  console.warn(
+    `⚠️  Invalid DEFAULT_VOICE_MODE "${raw ?? ""}". Expected off, tg, or pc. Using off.`
+  );
+  return "off";
 }
 
 export function loadConfig(): Config {
@@ -98,6 +115,9 @@ export function loadConfig(): Config {
   // ── Bot Name ────────────────────────────────────────────────────
   const botName = process.env.BOT_NAME?.trim() || "Ellie";
 
+  // ── Voice output default (per-chat override via /voice) ─────────
+  const defaultVoiceMode = parseVoiceOutputMode(process.env.DEFAULT_VOICE_MODE);
+
   return {
     player2GameKey,
     telegramBotToken,
@@ -106,5 +126,6 @@ export function loadConfig(): Config {
     defaultProfile,
     maxAgentIterations,
     botName,
+    defaultVoiceMode,
   };
 }
