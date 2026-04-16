@@ -30,7 +30,8 @@ try:
     # Filter by specific timestamp (e.g. 16:20 to 22:08 -> 980s to 1328s)
     filtered = [x['text'] for x in transcript if 975 <= x['start'] <= 1335]
     
-    with open('filtered_snippet.txt', 'w', encoding='utf-8') as fw:
+    # Prefer writing under data/ to avoid polluting the repo root
+    with open('data/filtered_snippet.txt', 'w', encoding='utf-8') as fw:
         fw.write(' '.join(filtered))
         
 except Exception as e:

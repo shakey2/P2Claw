@@ -26,9 +26,70 @@ import {
   stopHealthPing,
 } from "./player2.js";
 import { setActiveProfile, loadPersonality } from "./agent.js";
-import { createBot } from "./bot.js";
 import { getToolCount } from "./tools/registry.js";
 import { initDatabase, closeDatabase } from "./memory/index.js";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { join, dirname } from "path";
+import { createTelegramFrontend } from "./ui/telegram.js";
+import { createCliFrontend } from "./ui/cli.js";
+import type { Frontend } from "./ui/frontend.js";
+import { registerGracefulShutdown } from "./graceful-shutdown.js";
+
+// ── Single-instance lock (prevents Telegram 409 conflict) ───────
+const LOCK_PATH = join(process.cwd(), "data", "p2claw.bot.lock");
+
+function processAlive(pid: number): boolean {
+  try {
+    // Signal 0: check existence without killing
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireBotLock(): void {
+  const dir = dirname(LOCK_PATH);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  if (existsSync(LOCK_PATH)) {
+    try {
+      const raw = readFileSync(LOCK_PATH, "utf8").trim();
+      const pid = parseInt(raw, 10);
+      if (!isNaN(pid) && processAlive(pid)) {
+        console.error(
+          "\n╔══════════════════════════════════════════════════════════════╗\n" +
+          "║  P2 CLAW — BOT ALREADY RUNNING                              ║\n" +
+          "╚══════════════════════════════════════════════════════════════╝\n" +
+          `\n  Another bot instance is already running (pid ${pid}).\n` +
+          "  Stop it first (Ctrl+C in that window), then start again.\n"
+        );
+        process.exit(1);
+      }
+      // Stale lock (pid not alive)
+      unlinkSync(LOCK_PATH);
+    } catch {
+      // If the lock is corrupt or unreadable, remove it (safe) and continue.
+      try {
+        unlinkSync(LOCK_PATH);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  writeFileSync(LOCK_PATH, String(process.pid), "utf8");
+}
+
+function releaseBotLock(): void {
+  try {
+    if (existsSync(LOCK_PATH)) unlinkSync(LOCK_PATH);
+  } catch {
+    /* ignore */
+  }
+}
 
 async function boot(): Promise<void> {
   console.log("");
@@ -48,6 +109,13 @@ async function boot(): Promise<void> {
   console.log(`   ✓ Max agent iterations: ${config.maxAgentIterations}`);
   console.log(`   ✓ Profiles: ${config.useProfiles ? "Enabled" : "Disabled"}`);
   console.log(`   ✓ Default voice output: ${config.defaultVoiceMode} (per-chat: /voice)`);
+  console.log(`   ✓ UI mode: ${config.uiMode}`);
+
+  // Acquire early so a watcher restart can't overlap two long-pollers.
+  // CLI mode does not use Telegram polling and should not be locked.
+  if (config.uiMode === "telegram") {
+    acquireBotLock();
+  }
 
   // ── Step 2: Resolve API credential ────────────────────────────
   console.log("\n🔑 Resolving Player2 credentials...");
@@ -144,41 +212,45 @@ async function boot(): Promise<void> {
   console.log("\n💓 Starting periodic health ping...");
   startHealthPing();
 
-  // ── Step 10: Start Telegram bot ───────────────────────────────
-  console.log(`\n🤖 Starting Telegram bot...`);
+  // ── Step 10: Start frontend (Telegram or CLI) ─────────────────
+  console.log(`\n🤖 Starting frontend...`);
   console.log(`   ✓ Tools loaded: ${getToolCount()}`);
 
-  const bot = createBot(config);
+  const frontend: Frontend =
+    config.uiMode === "cli"
+      ? createCliFrontend(config)
+      : createTelegramFrontend(config);
 
   // Graceful shutdown — save database before exiting
+  let shutdownStarted = false;
   const shutdown = () => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     console.log("\n👋 Shutting down P2 Claw...");
+    if (process.env.npm_lifecycle_event === "dev") {
+      console.log(
+        "   Under `npm run dev`, tsx may restart this process. Press Ctrl+C in the terminal to stop the watcher."
+      );
+    }
     stopHealthPing();
     closeDatabase();
     console.log("   ✓ Database saved");
-    bot.stop();
+    void frontend.stop();
+    if (config.uiMode === "telegram") {
+      releaseBotLock();
+    }
     process.exit(0);
   };
+  registerGracefulShutdown(shutdown);
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-
-  // Error handling for the bot
-  bot.catch((err) => {
-    console.error("🔥 Bot error:", err);
+  process.on("exit", () => {
+    if (config.uiMode === "telegram") {
+      releaseBotLock();
+    }
   });
 
-  // Start long-polling
-  await bot.start({
-    onStart: (botInfo) => {
-      console.log(`   ✓ Online as @${botInfo.username}`);
-      console.log("");
-      console.log("═══════════════════════════════════════════════════════════════");
-      console.log(`  ${config.botName} is ready! Send a message on Telegram.`);
-      console.log("  Press Ctrl+C to stop.");
-      console.log("═══════════════════════════════════════════════════════════════");
-      console.log("");
-    },
-  });
+  await frontend.start();
 }
 
 // ── Run ─────────────────────────────────────────────────────────

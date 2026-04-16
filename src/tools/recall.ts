@@ -6,7 +6,7 @@
  * be stored in memory, or when it needs to retrieve context.
  */
 
-import type { ToolDefinition } from "./registry.js";
+import type { ToolDefinition } from "./tool-types.js";
 import { searchMemories, listMemories } from "../memory/index.js";
 
 interface RecallArgs {

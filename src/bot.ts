@@ -12,7 +12,20 @@
 import { Bot, InputFile } from "grammy";
 import type { Context } from "grammy";
 import type { Config, VoiceOutputMode } from "./config.js";
-import { processMessage, clearHistory, getHistoryLength, setActiveProfile, getActiveProfile, compactHistory } from "./agent.js";
+import {
+  processMessage,
+  clearHistory,
+  getHistoryLength,
+  setActiveProfile,
+  getActiveProfile,
+  compactHistory,
+  type ProcessMessageOptions,
+} from "./agent.js";
+import {
+  tryApproveWithTotp,
+  tryApprovePendingForChat,
+  hasPendingApprovalForChat,
+} from "./security/approval.js";
 import {
   checkHealth,
   getJoules,
@@ -31,6 +44,7 @@ import {
   setChatVoiceMode,
 } from "./memory/index.js";
 import { log } from "./logger.js";
+import { requestGracefulShutdown } from "./graceful-shutdown.js";
 
 /**
  * Player2 TTS chunking: `/v1/tts/speak` fails on long text (often HTTP 500).
@@ -43,9 +57,9 @@ const MAX_PLAYER2_TTS_CHUNKS_PER_REPLY = 36;
 /**
  * Effective voice mode: per-chat DB preference, else `.env` default.
  */
-async function effectiveVoiceMode(config: Config, chatId: number): Promise<VoiceOutputMode> {
+async function effectiveVoiceMode(config: Config): Promise<VoiceOutputMode> {
   try {
-    const stored = await getChatVoiceMode(chatId);
+    const stored = await getChatVoiceMode(config.memoryScopeId);
     if (stored !== null) return stored;
   } catch {
     /* database unavailable */
@@ -148,6 +162,31 @@ async function maybeSendTtsAfterReply(
   }
 }
 
+function buildProcessMessageOptions(config: Config, ctx: Context): ProcessMessageOptions {
+  return {
+    totpSecretBase32: config.totpSecretBase32,
+    memoryScopeId: config.memoryScopeId,
+    sendPendingApproval: async (text: string) => {
+      await ctx.reply(text);
+    },
+  };
+}
+
+/**
+ * Per-chat FIFO queue so long agent runs (e.g. waiting on TOTP) do not block
+ * grammY's update loop: the next Telegram update (your 6-digit code) can run
+ * immediately instead of sitting behind a still-awaiting processMessage().
+ */
+const agentJobTailByChat = new Map<number, Promise<void>>();
+
+function enqueueAgentJob(chatId: number, job: () => Promise<void>): void {
+  const prev = agentJobTailByChat.get(chatId) ?? Promise.resolve();
+  const next = prev.then(job).catch((err: unknown) => {
+    console.error("Agent job error:", err);
+  });
+  agentJobTailByChat.set(chatId, next);
+}
+
 /**
  * Creates and configures the Telegram bot.
  */
@@ -171,7 +210,89 @@ export function createBot(config: Config): Bot {
     await next();
   });
 
+  // ── TOTP approval interception (before agent / commands) ────
+  // Codes and APPROVE lines must never reach the LLM or conversation history.
+  bot.use(async (ctx, next) => {
+    const text = ctx.message?.text?.trim();
+    if (!text) {
+      await next();
+      return;
+    }
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) {
+      await next();
+      return;
+    }
 
+    const secret = config.totpSecretBase32?.trim();
+    const pending = !!(secret && hasPendingApprovalForChat(chatId));
+
+    // While a challenge is open, a 6-digit message (optionally spaced) is a TOTP attempt (not chat).
+    // e.g. "111111" or "111 111"
+    const digitsOnly = text.replace(/\s+/g, "");
+    if (pending && secret && /^\d{6}$/.test(digitsOnly)) {
+      const result = tryApprovePendingForChat(chatId, digitsOnly, secret);
+      console.log(`   TOTP approval attempt (code-only) ok=${result.ok}`);
+      await ctx.reply(
+        result.ok
+          ? "Approved. The pending action will continue."
+          : `Not approved: ${result.message}`
+      );
+      return;
+    }
+    // If there's no pending approval, never forward 6-digit codes to the agent.
+    // This avoids accidental tool triggers from "extra" codes sent right after approval.
+    if (!pending && secret && /^\d{6}$/.test(digitsOnly)) {
+      await ctx.reply("No pending high-risk action is waiting for approval.");
+      return;
+    }
+
+    // Any line starting with APPROVE: never forward to the model (avoids backlog weirdness).
+    if (secret && /^APPROVE\b/i.test(text)) {
+      if (!pending) {
+        await ctx.reply("There is no pending high-risk action waiting for approval.");
+        return;
+      }
+      const short = text.match(/^APPROVE\s+(\d{6})\s*$/i);
+      const full = text.match(/^APPROVE\s+([a-f0-9]{8})\s+(\d{6})\s*$/i);
+      let result;
+      if (full) {
+        result = tryApproveWithTotp(chatId, full[1]!.toLowerCase(), full[2]!, secret);
+        console.log(`   TOTP approval attempt challenge=${full[1]!.toLowerCase()} ok=${result.ok}`);
+      } else if (short) {
+        result = tryApprovePendingForChat(chatId, short[1]!, secret);
+        console.log(`   TOTP approval attempt (APPROVE code) ok=${result.ok}`);
+      } else {
+        await ctx.reply(
+          "Send only the 6-digit code from your authenticator, or:\n" +
+            "APPROVE <8-char-id> <code>\n" +
+            "(Check the pending message for the id if you use the long form.)"
+        );
+        return;
+      }
+      await ctx.reply(
+        result.ok
+          ? "Approved. The pending action will continue."
+          : `Not approved: ${result.message}`
+      );
+      return;
+    }
+
+    // If an approval is pending, do not allow other chat messages to queue behind the agent.
+    // Let commands through (e.g. /status) so the bot stays operable.
+    if (pending && secret) {
+      if (text.startsWith("/")) {
+        await next();
+        return;
+      }
+      await ctx.reply(
+        "Approval pending. Send the 6-digit code from your authenticator app."
+      );
+      return;
+    }
+
+    await next();
+  });
 
   // ── Setup State ──────────────────────────────────────────────
   const setupState = new Map<number, number>();
@@ -202,6 +323,41 @@ export function createBot(config: Config): Bot {
     }
   });
 
+  // ── /totp_status — Level 4 TOTP configured? ───────────────
+  bot.command("totp_status", async (ctx) => {
+    const ok = !!config.totpSecretBase32?.trim();
+    await ctx.reply(
+      ok
+        ? "TOTP: configured (secret present in .env)."
+        : "TOTP: not configured. Use /totp_enroll_help."
+    );
+  });
+
+  // ── /totp_enroll_help — manual enrollment instructions ─────
+  bot.command("totp_enroll_help", async (ctx) => {
+    await ctx.reply(
+      [
+        "TOTP (RFC 6238) for high-risk tools (Google Authenticator, Aegis, etc.):",
+        "",
+        "1. Generate a random Base32 secret (20+ bytes of entropy).",
+        "2. In your authenticator app, add a manual key with that secret.",
+        "3. Put the same value in .env as TOTP_SECRET_BASE32= (no quotes).",
+        "4. Restart the bot. Check with /totp_status.",
+        "",
+        "When a high-risk tool runs, reply with only the 6-digit code, or:",
+        "APPROVE <challengeId> <6-digit-code>",
+      ].join("\n")
+    );
+  });
+
+  // ── /shutdown command (whitelist-only) ───────────────────────
+  // Gracefully stops the process so Ctrl+C / terminal state isn't required.
+  bot.command("shutdown", async (ctx) => {
+    await ctx.reply("👋 Shutting down P2 Claw...");
+    // Same path as Ctrl+C — self-SIGINT is unreliable under `tsx watch` on Windows.
+    requestGracefulShutdown();
+  });
+
   // ── /start command ──────────────────────────────────────────
   bot.command("start", async (ctx) => {
     const name = config.botName;
@@ -215,6 +371,9 @@ export function createBot(config: Config): Bot {
       `  /memories — List stored memories\n` +
       `  /compact — Summarize conversation history\n` +
       `  /voice — Configure voice output\n` +
+      `  /totp_status — TOTP configured? (Level 4)\n` +
+      `  /totp_enroll_help — Set up Google Authenticator\n` +
+      `  /shutdown — Stop the bot safely\n` +
       `  /clear — Reset conversation history\n\n` +
       `I can remember things you tell me across conversations. ` +
       `Just send me a message to get started!`,
@@ -226,7 +385,7 @@ export function createBot(config: Config): Bot {
   bot.command("voice", async (ctx) => {
     const args = ctx.match?.trim().toLowerCase();
     if (args === "off" || args === "tg" || args === "pc") {
-      const ok = await setChatVoiceMode(ctx.chat.id, args);
+      const ok = await setChatVoiceMode(config.memoryScopeId, args);
       if (!ok) {
         await ctx.reply(
           "⚠️ Could not save voice preference (database unavailable). Check that memory init succeeded, then try again."
@@ -234,11 +393,11 @@ export function createBot(config: Config): Bot {
         return;
       }
       await ctx.reply(
-        `🎙️ Voice Mode set to: *${args}* (saved for this chat)`,
+        `🎙️ Voice Mode set to: *${args}* (saved; shared across all interfaces)`,
         { parse_mode: "Markdown" }
       );
     } else {
-      const current = await effectiveVoiceMode(config, ctx.chat.id);
+      const current = await effectiveVoiceMode(config);
       await ctx.reply(
         `🎙️ *Current Voice Mode*: ${current}\n\n` +
         `*Usage*: /voice <off | tg | pc>\n` +
@@ -282,7 +441,7 @@ export function createBot(config: Config): Bot {
       `💬 Conversation history: ${getHistoryLength(ctx.chat.id)} messages`
     );
 
-    const voiceOut = await effectiveVoiceMode(config, ctx.chat.id);
+    const voiceOut = await effectiveVoiceMode(config);
     lines.push(`🎙️ Voice output: ${voiceOut} (/voice to change)`);
 
     await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
@@ -370,8 +529,8 @@ export function createBot(config: Config): Bot {
 
   // ── /memories command ──────────────────────────────────────
   bot.command("memories", async (ctx) => {
-    const chatId = ctx.chat.id;
-    const count = await getMemoryCount(chatId);
+    const scope = config.memoryScopeId;
+    const count = await getMemoryCount(scope);
 
     if (count === 0) {
       await ctx.reply(
@@ -382,7 +541,7 @@ export function createBot(config: Config): Bot {
       return;
     }
 
-    const memories = await listMemories(chatId, undefined, 20);
+    const memories = await listMemories(scope, undefined, 20);
     const lines = memories.map(
       (m) => `  • *#${m.id}* (${m.category}) ${m.content}`
     );
@@ -438,7 +597,7 @@ export function createBot(config: Config): Bot {
     const currentState = setupState.get(ctx.chat.id);
     if (currentState !== undefined) {
       // Save memory as core
-      await addMemory(ctx.chat.id, `User answer to '${SETUP_QUESTIONS[currentState]}': ${text}`, "core");
+      await addMemory(config.memoryScopeId, `User answer to '${SETUP_QUESTIONS[currentState]}': ${text}`, "core");
       
       const nextState = currentState + 1;
       if (nextState < SETUP_QUESTIONS.length) {
@@ -453,16 +612,16 @@ export function createBot(config: Config): Bot {
 
     console.log(`💬 Processing message: "${text.substring(0, 80)}${text.length > 80 ? '...' : ''}"`);
 
-    // Show "typing" indicator
-    await ctx.replyWithChatAction("typing");
-
-    try {
-      console.log(`   → Sending to agent loop...`);
+    enqueueAgentJob(ctx.chat.id, async () => {
+      try {
+        await ctx.replyWithChatAction("typing");
+        console.log(`   → Sending to agent loop...`);
       const response = await processMessage(
         ctx.chat.id,
         text,
         config.botName,
-        config.maxAgentIterations
+        config.maxAgentIterations,
+        buildProcessMessageOptions(config, ctx)
       );
       console.log(`   ← Agent returned ${response.length} chars`);
 
@@ -485,7 +644,7 @@ export function createBot(config: Config): Bot {
         }
         console.log(`   ✓ Reply sent to Telegram`);
 
-        const mode = await effectiveVoiceMode(config, ctx.chat.id);
+        const mode = await effectiveVoiceMode(config);
         await maybeSendTtsAfterReply(ctx, response, mode);
       } else {
         console.log(`   ⚠️  Agent returned empty response`);
@@ -511,6 +670,7 @@ export function createBot(config: Config): Bot {
         });
       }
     }
+    });
   });
 
   // ── Voice message handler ──────────────────────────────────────
@@ -555,39 +715,38 @@ export function createBot(config: Config): Bot {
 
       console.log(`   ← Transcribed: "${transcript.substring(0, 80)}${transcript.length > 80 ? "..." : ""}"`);
 
-      // ── Route through agent loop (same as text) ─────────────
-      // Keep typing indicator alive while the LLM processes
-      await ctx.replyWithChatAction("typing");
+      console.log(`   → Queueing transcription for agent loop...`);
+      enqueueAgentJob(ctx.chat.id, async () => {
+        await ctx.replyWithChatAction("typing");
+        const response = await processMessage(
+          ctx.chat.id,
+          transcript,
+          config.botName,
+          config.maxAgentIterations,
+          buildProcessMessageOptions(config, ctx)
+        );
+        console.log(`   ← Agent returned ${response.length} chars`);
 
-      console.log(`   → Sending transcription to agent loop...`);
-      const response = await processMessage(
-        ctx.chat.id,
-        transcript,
-        config.botName,
-        config.maxAgentIterations
-      );
-      console.log(`   ← Agent returned ${response.length} chars`);
+        const fullReply = `🎤 *I heard:* "${transcript}"\n\n${response}`;
 
-      // Prepend transcription so user can verify dictation accuracy
-      const fullReply = `🎤 *I heard:* "${transcript}"\n\n${response}`;
-
-      if (fullReply.length <= 4096) {
-        await ctx.reply(fullReply, { parse_mode: "Markdown" }).catch(() => {
-          console.log(`   ⚠️  Markdown parse failed, falling back to plain text`);
-          return ctx.reply(fullReply);
-        });
-      } else {
-        const chunks = splitMessage(fullReply, 4096);
-        for (const chunk of chunks) {
-          await ctx.reply(chunk, { parse_mode: "Markdown" }).catch(() => {
-            return ctx.reply(chunk);
+        if (fullReply.length <= 4096) {
+          await ctx.reply(fullReply, { parse_mode: "Markdown" }).catch(() => {
+            console.log(`   ⚠️  Markdown parse failed, falling back to plain text`);
+            return ctx.reply(fullReply);
           });
+        } else {
+          const chunks = splitMessage(fullReply, 4096);
+          for (const chunk of chunks) {
+            await ctx.reply(chunk, { parse_mode: "Markdown" }).catch(() => {
+              return ctx.reply(chunk);
+            });
+          }
         }
-      }
-      console.log(`   ✓ Voice reply sent to Telegram`);
+        console.log(`   ✓ Voice reply sent to Telegram`);
 
-      const mode = await effectiveVoiceMode(config, ctx.chat.id);
-      await maybeSendTtsAfterReply(ctx, response, mode);
+        const mode = await effectiveVoiceMode(config);
+        await maybeSendTtsAfterReply(ctx, response, mode);
+      });
 
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";

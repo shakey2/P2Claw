@@ -32,6 +32,41 @@ npm install
 npm run dev
 ```
 
+### UI Mode: Telegram or CLI
+
+By default, P2 Claw runs the Telegram frontend. You can run **CLI-only** by setting:
+
+```env
+UI_MODE=cli
+```
+
+Then start as usual (interactive REPL).
+If you use `npm run dev`, it runs a watcher; that's great for development, but it may restart the process when files change. For CLI mode, `npm run start` is usually smoother:
+
+```bash
+npm run dev
+```
+
+Or:
+
+```bash
+npm run start
+```
+
+In CLI mode, type `/help` for commands. Audio features (STT/TTS) remain Telegram-only for now.
+
+You can also launch CLI directly on Windows:
+
+```bash
+cli.bat
+```
+
+Or one-shot (non-interactive) with a message:
+
+```bash
+cli.bat "hello"
+```
+
 ### What You Need to Configure
 
 Edit your `.env` file:
@@ -41,6 +76,8 @@ Edit your `.env` file:
 | `TELEGRAM_BOT_TOKEN` | Telegram → [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token |
 | `TELEGRAM_ALLOWED_USER_IDS` | Telegram → [@userinfobot](https://t.me/userinfobot) → it replies with your numeric ID |
 | `DEFAULT_VOICE_MODE` | Optional. `off` (default), `tg` (voice note after replies), or `pc` (speak via Player2 on this PC). Per-chat override: `/voice` |
+| `UI_MODE` | Optional. `telegram` (default) or `cli`. Controls which frontend starts. |
+| `TOTP_SECRET_BASE32` | Optional until you use high-risk tools. RFC 6238 secret (Base32) shared with Google Authenticator / Aegis — same value as in the app. |
 
 **Important:** Never commit your `.env`. It contains secrets (Telegram bot token, allowed user IDs). This repo ignores `.env` by default via `.gitignore`.
 
@@ -54,6 +91,9 @@ That's it. The Player2 API connection is built in — just make sure the Player2
 - **No web server** — Uses Telegram's long-polling. Zero open ports. Nothing to scan or attack.
 - **Secrets in .env only** — Your Telegram token never appears in code or logs.
 - **Local-first** — Everything runs on your machine. Messages are processed locally via Player2.
+- **Level 4 Phase 1 — TOTP approvals** — High-risk tools (demo: `high_risk_demo`) ask for your authenticator code. While a challenge is open, send **only the 6-digit code** in Telegram (or `APPROVE <8-char-id> <code>`). Those messages are handled **before** the AI sees them, so they are not added to model context or chat history. Set `TOTP_SECRET_BASE32` in `.env` (see `.env.example`). See [`.agent/workflows/security-considerations.md`](.agent/workflows/security-considerations.md) for why permission boundaries stay in the bot, not the LLM.
+- **Never paste your Base32 secret into Telegram** — only the six-digit rotating code when the bot is waiting for approval.
+- **No raw model output logging by default** — set `P2CLAW_LOG_RAW_MODEL=true` in `.env` to print a short raw response preview for debugging.
 
 ## 🤖 Bot Commands
 
@@ -68,6 +108,37 @@ That's it. The Player2 API connection is built in — just make sure the Player2
 | `/voice` | Configure voice output: `/voice off \| tg \| pc` (saved per chat; survives restarts) |
 | `/clear` | Reset conversation history |
 | `/cancel` | Cancel an in-progress `/setup` session |
+| `/totp_status` | Whether `TOTP_SECRET_BASE32` is set (boolean only; never prints the secret) |
+| `/totp_enroll_help` | How to enroll an authenticator app and use `APPROVE` messages |
+| `/shutdown` | Gracefully stop the bot (saves DB, releases bot lock) |
+
+## 🖥️ CLI Commands
+
+When `UI_MODE=cli`, you can use:
+
+| Command | Description |
+|---|---|
+| `/help` | Show CLI help |
+| `/memories` | List recent memories |
+| `/compact` | Summarize older conversation history |
+| `/clear` | Clear conversation history (memories unaffected) |
+| `/totp_status` | Whether `TOTP_SECRET_BASE32` is set |
+| `/shutdown` | Graceful shutdown |
+| `/exit` | Quit CLI |
+
+### CLI one-shot mode (works without TTY)
+
+If your terminal does not support interactive prompts (some IDE/Git Bash setups), you can run a single message and exit:
+
+```bash
+cli.bat "what is my current status?"
+```
+
+Or pipe stdin:
+
+```bash
+echo "summarize our last chat" | cli.bat
+```
 
 ## 🎭 AI Profiles (Patron Feature)
 
@@ -113,9 +184,22 @@ src/
 ├── player2.ts            # Player2/OpenAI SDK client + health ping
 ├── bot.ts                # Telegram bot setup & message routing
 ├── agent.ts              # Agentic tool loop
+├── ui/                   # Frontends (Telegram, CLI; future local HTML GUI)
+│   ├── core.ts            # Shared agent core wrapper for frontends
+│   ├── frontend.ts        # Frontend interface + hooks types
+│   ├── telegram.ts        # Telegram frontend wrapper
+│   └── cli.ts             # CLI REPL frontend
+├── security/
+│   ├── totp.ts           # RFC 6238 verification (Node crypto)
+│   └── approval.ts       # Pending challenges + TOTP gate
 └── tools/
-    ├── registry.ts       # Tool registration & dispatch
-    └── get-current-time.ts   # Built-in: current time tool
+    ├── registry.ts       # Tool registration, dispatch, high-risk TOTP gate
+    ├── tool-types.ts     # Shared ToolDefinition (avoids import cycles)
+    ├── get-current-time.ts
+    ├── remember.ts
+    ├── recall.ts
+    ├── forget.ts
+    └── high-risk-demo.ts # Stub high-risk tool (Level 4 Phase 1)
 
 scripts/
 └── encode-key.ts         # Utility to encode your game key for embedding

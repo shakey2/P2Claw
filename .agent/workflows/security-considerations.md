@@ -6,6 +6,7 @@
 
 1. **Rule of Zero LLM Trust**: Assume the underlying LLM is constantly subject to hidden prompt injections from external data (web pages, emails, pasted user text). **Do not rely on the LLM's reasoning engine to block malicious actions.** Security must be hardcoded around the tool boundaries.
 2. **Never Auto-Execute External Actions**: Any tool that writes outside the application boundary (e.g., executing shell commands, deleting host files, sending HTTP POSTs) **MUST** require explicit, out-of-band user approval (e.g., a Telegram inline `[Yes/No]` keyboard).
+3. **No Rogue Bot Instances**: This project uses Telegram long-polling (`getUpdates`). Only **one** bot instance may run per token at a time. If you (an AI agent) start `npm run dev` / `npm start` while another instance is running, Telegram will throw a 409 conflict. Always stop any bot process you started before launching a new one, and avoid leaving background watchers alive.
 
 ## Threat Vectors (OpenClaw Observations)
 

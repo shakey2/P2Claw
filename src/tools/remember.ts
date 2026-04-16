@@ -6,7 +6,7 @@
  * or when it determines a piece of information should be retained.
  */
 
-import type { ToolDefinition } from "./registry.js";
+import type { ToolDefinition } from "./tool-types.js";
 import { addMemory, MEMORY_CATEGORIES, type MemoryCategory } from "../memory/index.js";
 
 interface RememberArgs {

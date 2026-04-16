@@ -5,7 +5,7 @@
  * to validate the agentic loop is working correctly.
  */
 
-import type { ToolDefinition } from "./registry.js";
+import type { ToolDefinition } from "./tool-types.js";
 
 interface GetCurrentTimeArgs {
   timezone?: string;

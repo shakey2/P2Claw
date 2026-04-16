@@ -20,7 +20,11 @@ import type OpenAI from "openai";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { getClient, getProfileClient } from "./player2.js";
-import { getAllToolSchemas, executeTool } from "./tools/registry.js";
+import {
+  getAllToolSchemas,
+  executeTool,
+  type ExecuteToolOptions,
+} from "./tools/registry.js";
 import { getRelevantContext, getCoreContext } from "./memory/index.js";
 import { log } from "./logger.js";
 
@@ -115,7 +119,8 @@ TOOL USAGE RULES — YOU MUST FOLLOW THESE:
   → You call the remember tool with content: "User loves ramen" (or similar clear statement).
 
 - When the user asks about something you might have remembered before, first call the "recall" tool.
-- Always prefer using a tool over guessing.`;
+- Always prefer using a tool over guessing.
+- The "high_risk_demo" tool is for testing Level 4 TOTP approval only (reply with the 6-digit code when asked); it does not run shell commands or change the system.`;
 
   // Append core memories
   if (coreMemories) {
@@ -130,21 +135,37 @@ TOOL USAGE RULES — YOU MUST FOLLOW THESE:
   return basePrompt;
 }
 
+export type ProcessMessageOptions = {
+  /** Plain-text approval prompts for high-risk tools (Telegram). */
+  sendPendingApproval?: (text: string) => Promise<void>;
+  totpSecretBase32?: string;
+  /**
+   * Stable key for persisted memories (all UIs). When set, overrides `chatId`
+   * for recall/remember/forget and prompt injection; `chatId` still scopes
+   * conversation history and TOTP challenges.
+   */
+  memoryScopeId?: number;
+};
+
 /**
  * Processes a user message through the agentic loop.
  *
- * @param chatId - Telegram chat ID (used for conversation history and memory)
+ * @param chatId - Session id (e.g. Telegram chat ID, CLI session): conversation history + TOTP binding
  * @param userMessage - The user's text message
  * @param botName - Display name for the bot personality
  * @param maxIterations - Safety limit on tool-call rounds
+ * @param opts - Optional TOTP / approval channel for high-risk tools
  * @returns The final assistant response text
  */
 export async function processMessage(
   chatId: number,
   userMessage: string,
   botName: string,
-  maxIterations: number
+  maxIterations: number,
+  opts: ProcessMessageOptions = {}
 ): Promise<string> {
+  const memoryKey = opts.memoryScopeId ?? chatId;
+
   // Get or create conversation history for this chat
   let history = conversationHistory.get(chatId);
   if (!history) {
@@ -170,7 +191,7 @@ export async function processMessage(
   // Get core memory which is ALWAYS injected
   let coreContext = "";
   try {
-    const coreMemories = await getCoreContext(chatId);
+    const coreMemories = await getCoreContext(memoryKey);
     if (coreMemories.length > 0) {
       coreContext = coreMemories.map((m) => `- ${m.content}`).join("\n");
     }
@@ -181,7 +202,7 @@ export async function processMessage(
   // Search for semantic memories relevant to what the user just said
   let semanticContext = "";
   try {
-    const relevantMemories = await getRelevantContext(chatId, userMessage, 5);
+    const relevantMemories = await getRelevantContext(memoryKey, userMessage, 5);
     if (relevantMemories.length > 0) {
       semanticContext = relevantMemories
         .map((m) => `- [#${m.id}] (${m.category}) ${m.content}`)
@@ -202,6 +223,13 @@ export async function processMessage(
 
   const messages: ChatMessage[] = [systemMessage, ...history];
   const tools = getAllToolSchemas();
+
+  const execOpts: ExecuteToolOptions = {
+    chatId,
+    memoryScopeId: memoryKey,
+    sendPendingApproval: opts.sendPendingApproval,
+    totpSecretBase32: opts.totpSecretBase32,
+  };
 
   // Pick the right client (default or profile-specific)
   const client = _activeProfile
@@ -263,7 +291,13 @@ export async function processMessage(
     const activeModel = response.model || "unknown";
 
     // ── NEW: Log the raw LLM output and active model so we can verify behavior
-    console.log(`   🤖 [Model: ${activeModel}] Raw response: "${rawContent.replace(/\n/g, ' ').substring(0, 100)}${rawContent.length > 100 ? '...' : ''}"`);
+    if (process.env.P2CLAW_LOG_RAW_MODEL === "true") {
+      console.log(
+        `   🤖 [Model: ${activeModel}] Raw response: "${rawContent.replace(/\n/g, " ").substring(0, 100)}${
+          rawContent.length > 100 ? "..." : ""
+        }"`
+      );
+    }
 
     // Add assistant response to messages for potential next iteration
     // Sanitize message: Gemini via proxy crashes if you send back response-only properties
@@ -284,7 +318,7 @@ export async function processMessage(
       if (autoAction) {
         console.log(`   🔄 Auto-triggering ${autoAction.tool} tool (model failed to use tool_calls)`);
         // Run silently in the background, don't break the loop or API schema
-        executeTool(autoAction.tool, autoAction.args, chatId).catch(err => {
+        executeTool(autoAction.tool, autoAction.args, execOpts).catch((err) => {
             log.error(`Auto-${autoAction.tool} failed: ${err}`);
         });
       }
@@ -315,7 +349,7 @@ export async function processMessage(
       log.info(`Tool call [${iterations}/${maxIterations}]: ${functionName}(${JSON.stringify(args)})`);
 
       // Pass chatId so memory tools can operate on the correct chat
-      const result = await executeTool(functionName, args, chatId);
+      const result = await executeTool(functionName, args, execOpts);
 
       // Add tool result to messages
       const toolMessage: ChatMessage = {

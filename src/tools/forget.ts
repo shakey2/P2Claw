@@ -6,7 +6,7 @@
  * first recall the memory to find the ID, then call forget with it.
  */
 
-import type { ToolDefinition } from "./registry.js";
+import type { ToolDefinition } from "./tool-types.js";
 import { deleteMemory, getMemory } from "../memory/index.js";
 
 interface ForgetArgs {

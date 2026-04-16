@@ -18,9 +18,12 @@
 import initSqlJs, { type Database } from "sql.js";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { log } from "../logger.js";
 
-const DB_PATH = join(process.cwd(), "data", "p2claw.db");
+/** Repo root (works for `tsx src/...` and `node dist/...`, not only `cwd`). */
+const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const DB_PATH = join(PKG_ROOT, "data", "p2claw.db");
 const SAVE_DEBOUNCE_MS = 1_000;
 
 let _db: Database | null = null;

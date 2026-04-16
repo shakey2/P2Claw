@@ -17,8 +17,10 @@
 
 import { appendFileSync, existsSync, statSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
-const LOG_PATH = join(process.cwd(), "data", "p2claw.log");
+const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const LOG_PATH = join(PKG_ROOT, "data", "p2claw.log");
 const MAX_LOG_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 
 type LogLevel = "ERROR" | "WARN" | "INFO" | "DEBUG";

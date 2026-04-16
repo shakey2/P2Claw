@@ -79,6 +79,30 @@ The entire codebase is designed so that `security.ts` is fully self-contained. *
 - If someone wants to use a different AI provider entirely, they'd need to rewrite `player2.ts` — the key becomes irrelevant at that point.
 - See `.agent/workflows/credential-modification.md` for agent-specific guidance.
 
+### 2.7 Core memory vs optional semantic (RAG) modules
+
+Core ships with **persistent memory** (sql.js + FTS5): lexical search, CRUD tools, and context injection. That preserves **minimal dependencies**, **local-first** storage, and alignment with §2.2 and AV/EDR posture (§4.1).
+
+**Honest limit:** FTS-style retrieval is not full **semantic** recall. Strong conversational memory usually needs **embeddings and vector retrieval** (often plus chunking, reranking, and ongoing maintenance). Those approaches frequently imply **extra dependencies** (embedding runtimes, native vector libraries) and/or **networked or hosted** pieces (embedding APIs, managed databases) — tradeoffs against the strictest lean + local-only defaults.
+
+**Product stance:** keep the current core memory in the **base package** as the always-available, inspectable baseline. **Recommend** (not require) one or more **optional RAG / semantic memory packages** for users who want that quality bar. Each optional package must document **dependencies**, **where data lives**, **what leaves the machine** (if anything), and **what trust boundaries change**.
+
+### 2.8 Extensibility & optional modules
+
+Optional capability stays **explicit, auditable, and user-chosen** — consistent with §2.1 (no arbitrary community skill files; MCP for untrusted or heavy integrations).
+
+- **Preference order:** **MCP** and **separate processes** for most third-party integrations; small **first-party** optional modules use a documented layout (see module map).
+- **Registration:** optional features declare themselves through a **small, typed surface** (e.g. one registration path consumed at boot) — not scattered import side-effects across the tree.
+- **Stable surfaces for extensions:** `tools/registry`, `ToolDefinition` / `tool-types.ts`, `Frontend` / `ui/core` — **not** `security.ts` or credential plumbing unless the change is intentionally security-scoped (rare).
+- **LLM / tool surface:** do not grow the **visible tool set** without bounds on every request. Prefer **namespacing**, **profiles or toggles** that enable tool subsets, and/or **MCP** so large optional stacks stay off the default tool list. Enabling an optional module **widens** confusion and attack surface only when the user turns it on.
+- **Discoverability:** each extension includes a **module-level header** (§2.5) and a **one-line entry** in the module map when it is non-experimental.
+
+**AI-assisted development:** when adding a **top-level** area, update the module map; prefer **vertical slices** (one folder per feature); keep files within a **soft size band** when practical (guidance: [docs/DESIGN_DOC_SPLITTING.md](docs/DESIGN_DOC_SPLITTING.md)) so humans and coding agents can load whole units.
+
+### 2.9 Maintaining this document
+
+`DESIGN.md` should remain the **index of truth**, not an unbounded dump of every table and story. If it becomes hard to navigate or expensive to load in tools, **move depth** into `docs/` and link back. See [docs/DESIGN_DOC_SPLITTING.md](docs/DESIGN_DOC_SPLITTING.md) for **when to split** and a **practical pattern** (thin core + linked deep dives).
+
 ---
 
 ## 3. Player2 Integration
@@ -158,18 +182,29 @@ src/
 ├── config.ts         # Env loading, validation, typed Config object
 ├── security.ts       # Key resolution (env → embedded fallback)
 ├── player2.ts        # OpenAI SDK client, health ping, profiles, STT
-├── bot.ts            # grammY setup, whitelist, commands, text + voice routing
+├── bot.ts            # Telegram bot wiring (frontend implementation)
 ├── agent.ts          # Agentic tool loop, memory injection, context pruning
+├── ui/
+│   ├── frontend.ts   # Frontend interface + hooks types
+│   ├── core.ts       # AgentCore wrapper for multiple frontends
+│   ├── telegram.ts   # Telegram frontend wrapper (optional at runtime)
+│   └── cli.ts        # CLI REPL frontend (optional at runtime)
 ├── memory/
 │   ├── index.ts      # Barrel export
 │   ├── db.ts         # sql.js init, schema, debounced persistence
 │   └── store.ts      # Memory CRUD, FTS5 search, context extraction
+├── security/
+│   ├── totp.ts       # RFC 6238 TOTP verify (crypto only)
+│   └── approval.ts   # Pending challenges + TOTP-gated approval
 ├── tools/
-│   ├── registry.ts   # Tool registration, dispatch, chat context
+│   ├── registry.ts   # Tool registration, dispatch, high-risk gate
+│   ├── tool-types.ts # Shared ToolDefinition (avoids import cycles)
 │   ├── get-current-time.ts
 │   ├── remember.ts   # Store a memory
 │   ├── recall.ts     # Search memories (FTS5)
-│   └── forget.ts     # Delete a memory
+│   ├── forget.ts     # Delete a memory
+│   └── high-risk-demo.ts  # Level 4 stub (risk: high)
+├── extensions/       # Optional first-party modules (empty until used) — §2.8
 └── types/
     └── sql.js.d.ts   # Type declarations for sql.js
 
@@ -177,6 +212,18 @@ data/
 ├── p2claw.db         # SQLite database (created at runtime)
 └── personality.md    # User-editable personality config
 ```
+
+*Packaged optional modules (npm or local) register via the §2.8 surfaces; MCP servers remain out-of-process.*
+
+### 4.6 Frontends (Telegram optional)
+
+P2 Claw supports multiple UI surfaces by keeping the agent loop single-sourced and implementing thin frontends:
+
+- **Telegram frontend** (default): grammY long-polling + audio features (STT/TTS).
+- **CLI frontend**: local REPL for power users/devs.
+- **Future local HTML GUI**: will implement the same `Frontend` interface (no server shipped yet).
+
+Runtime selection is via `UI_MODE` (`telegram` or `cli`). The intent is: new features land in the **core** once, and each frontend only handles input/output/UX.
 
 ### 4.3 Agentic Tool Loop
 ```
@@ -236,6 +283,13 @@ Named after the elephant AI mascot of the Player2 platform.
 
 ## 6. Build Levels — Roadmap
 
+## Agent automation rules (must follow)
+
+- **No rogue PIDs**: if you (human or AI) start `npm run dev` / any watcher during a task, **you must stop it before summarizing or ending the task**. The user should never be left cleaning up background Node processes.
+- **Use the cleaner**: run `npm run dev:clean` at the end of any task that may have spawned P2 Claw dev processes (kills P2 Claw `tsx watch src/index.ts` processes; does not start the bot).
+- **Keep `.env` aligned**: whenever you change `.env.example`, run `npm run env:sync` to regenerate `.env` from the updated example **while preserving existing values**. This avoids forcing the user to re-enter credentials or hunt for reordered keys.
+- **Always typecheck**: run `npm run build` after substantive edits.
+
 ### Level 1 — Foundation ✅
 - [x] Telegram bot (grammY, long-polling)
 - [x] LLM via Player2 `/v1/chat/completions`
@@ -259,11 +313,12 @@ Named after the elephant AI mascot of the Player2 platform.
 - [x] Voice preference settings (per-chat persistence in SQLite + `DEFAULT_VOICE_MODE` in `.env`)
 
 ### Level 4 — Tools & MCP
+- [x] **Phase 1 (foundation):** RFC 6238 TOTP in `.env` (`TOTP_SECRET_BASE32`), short-lived approval challenges with payload binding, Telegram `APPROVE <challengeId> <6-digit-code>` handled in `bot.ts` before the agent (codes never reach the LLM). Stub tool `high_risk_demo` exercises the high-risk path; real shell/fs/MCP remain below.
 - [ ] Shell command tool (with confirmation for dangerous ops)
 - [ ] File system tool (read/write/list, sandboxed)
 - [ ] MCP bridge (connect external MCP servers)
-- [ ] Tool permission system (See `.agent/workflows/security-considerations.md`)
-- [ ] Out-of-band 2FA for permissions (e.g., Local terminal prompt required to approve catastrophic remote Telegram requests)
+- [ ] Tool permission system (full manifest / policy surface — see `.agent/workflows/security-considerations.md`; Phase 1 adds TOTP-gated high-risk tools only)
+- [ ] Out-of-band 2FA beyond Phase 1 (e.g., local terminal or HTML prompt for approvals without Telegram)
 - [ ] Modular Frontends (Abstract Telegram interaction out so users can optionally exclusively use a local CLI or Local HTML GUI to eliminate remote attack surfaces)
 
 ### Level 5 — Heartbeat
@@ -316,7 +371,11 @@ Significant design decisions, recorded so future-us (or future AI) knows the **w
 | 2026-04-12 | Markdown personality config (`data/personality.md`) | Human-readable, git-friendly personality customization without touching source code. Aligns with §2.5 (code readability / inspectability) and §2.6 (open architecture). Not a replacement for SQLite memory — just for personality/prompt config. |
 | 2026-04-12 | Context pruning via LLM summarization | Hard-trimming old messages loses context permanently. Summarizing via the LLM preserves key facts in a compact form. Auto-triggers at 40 messages; manual via `/compact`. The summarization call costs joules but is infrequent. |
 | 2026-04-14 | Level 3 voice parity + persisted preferences | TTS after voice-in replies matches text-in; `/voice` stored per chat in SQLite with `DEFAULT_VOICE_MODE` fallback in `.env`. |
+| 2026-04-14 | Level 4 Phase 1 — TOTP + Telegram approval gate | RFC 6238 via Node `crypto` only; challenges bind tool args; `APPROVE` handled in `bot.ts` before the agent so codes never reach the LLM; `high_risk_demo` stub proves the suspend/resume path. |
+| 2026-04-15 | Core memory vs optional RAG modules (§2.7) | Core keeps FTS/sql.js as the default, auditable baseline. Semantic RAG is recommended via optional packages that declare deps, data residency, and trust boundaries — avoids pretending lexical memory is sufficient for all use cases. |
+| 2026-04-15 | Extensibility + tool-surface discipline (§2.8) | Optional integrations register through explicit surfaces; MCP preferred for heavy/third-party; bounded visible tools and module map updates keep the codebase and LLM coherent as optional modules accumulate. |
+| 2026-04-15 | `DESIGN.md` maintenance + splitting guidance | Document growth managed via `docs/DESIGN_DOC_SPLITTING.md` — thin index, linked depth, split when ~800+ lines or TOC pain. |
 
 ---
 
-*Last updated: 2026-04-14*
+*Last updated: 2026-04-15*
