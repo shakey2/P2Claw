@@ -8,7 +8,8 @@
     "dev:clean": "node scripts/dev-clean.mjs",
     "env:sync": "node scripts/env-sync.mjs",
     "start": "tsx src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "verify": "tsx scripts/verify-modules.ts"
   },
   "keywords": [
     "telegram",

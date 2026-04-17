@@ -1,0 +1,46 @@
+{
+  "id": "com.p2claw.demo-safe",
+  "name": "Demo Safe",
+  "version": "0.2.0",
+  "description": "First-party demo module using only safe permissions. Exposes demo_ping (returns current time via the broker) and demo_notes (exercises module-scoped memory + data/public/<moduleId>/ reads).",
+  "runtime": "inprocess",
+  "firstParty": true,
+  "entry": "index.js",
+  "permissions": ["log.info", "time.now", "memory.read", "memory.write", "fs.read_public"],
+  "tools": [
+    {
+      "name": "demo_ping",
+      "description": "Ping the demo-safe module and get the current time back. Useful to prove the module framework is wired end-to-end.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "Optional note to include in the reply."
+          }
+        },
+        "required": []
+      },
+      "requires": ["log.info", "time.now"]
+    },
+    {
+      "name": "demo_notes",
+      "description": "Reads or writes a module-scoped note by key. If 'value' is provided, writes it. If an 'intro.md' file exists under data/public/com.p2claw.demo-safe/, it is returned alongside the note.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The note key to read or write."
+          },
+          "value": {
+            "type": "string",
+            "description": "If provided, the value to store under 'key'. Omit to read only."
+          }
+        },
+        "required": ["key"]
+      },
+      "requires": ["memory.read", "memory.write", "fs.read_public"]
+    }
+  ]
+}

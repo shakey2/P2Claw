@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>P2 Claw — Config</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <h1>Configuration</h1>
+    <p class="sub"><span class="product-name">P2 Claw</span> · local-only settings page</p>
+    <nav class="nav-row">
+      <a href="/">Chat</a>
+    </nav>
+  </header>
+
+  <main>
+    <form id="configForm" class="setup">
+      <label>
+        UI mode
+        <select id="cfgUiMode">
+          <option value="html">html</option>
+          <option value="telegram">telegram</option>
+          <option value="cli">cli</option>
+        </select>
+      </label>
+
+      <label>
+        Bot name
+        <input id="cfgBotName" type="text" placeholder="Ellie" />
+      </label>
+
+      <label>
+        Telegram allowed user IDs
+        <input id="cfgAllowedIds" type="text" placeholder="e.g. 123456789,987654321" />
+      </label>
+      <p class="hint">Comma-separated numeric IDs.</p>
+
+      <label>
+        Telegram bot token
+        <input id="cfgBotToken" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="(leave blank to keep current)" />
+      </label>
+      <p class="hint">Key is hidden after saving.</p>
+
+      <label>
+        Default voice mode
+        <select id="cfgVoiceMode">
+          <option value="">(default)</option>
+          <option value="off">off</option>
+          <option value="tg">tg</option>
+          <option value="pc">pc</option>
+        </select>
+      </label>
+
+      <label>
+        Max agent iterations
+        <input id="cfgMaxIters" type="number" min="1" max="25" step="1" placeholder="10" />
+      </label>
+
+      <label>
+        Memory scope id
+        <input id="cfgMemoryChatId" type="number" min="1" step="1" placeholder="1" />
+      </label>
+
+      <label>
+        Enable Player2 profiles
+        <select id="cfgUseProfiles">
+          <option value="false">false</option>
+          <option value="true">true</option>
+        </select>
+      </label>
+
+      <label>
+        Default profile (when profiles enabled)
+        <input id="cfgDefaultProfile" type="text" placeholder="(optional)" />
+      </label>
+
+      <label>
+        Log raw model preview (debug)
+        <select id="cfgLogRawModel">
+          <option value="false">false</option>
+          <option value="true">true</option>
+        </select>
+      </label>
+
+      <label>
+        TOTP secret (Base32)
+        <input id="cfgTotpSecret" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="(leave blank to keep current)" />
+      </label>
+      <p class="hint">Key is hidden after saving.</p>
+
+      <label>
+        HTML UI host
+        <input id="cfgHtmlHost" type="text" placeholder="127.0.0.1" />
+      </label>
+
+      <label>
+        HTML UI port
+        <input id="cfgHtmlPort" type="text" placeholder="3847" />
+      </label>
+
+      <button type="submit">Save</button>
+    </form>
+    <p id="msg" class="msg" role="status" aria-live="polite"></p>
+  </main>
+
+  <script src="/assets/config.js" defer></script>
+</body>
+</html>

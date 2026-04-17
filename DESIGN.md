@@ -20,7 +20,7 @@ Inspired by [OpenClaw](https://github.com/steipete/openclaw) (formerly ClawdBot/
 ### What we reject from OpenClaw
 | Problem | Our Solution |
 |---|---|
-| Exposed web server (42K+ public instances found) | Telegram long-polling only. Zero open ports. |
+| Publicly reachable web server (42K+ public instances found) | Telegram long-polling by default; optional **loopback-only** local HTML UI (§2.1, §4.6) — never bind `0.0.0.0` for the GUI. |
 | Untrusted community skill files (341 found malicious) | MCP protocol only. No arbitrary code loading. |
 | Per-token API costs ($500–$5K/mo reported) | Player2 joule-based credits via local app. |
 | Massive codebase nobody reads | Lean. Every file understood. |
@@ -33,11 +33,13 @@ Inspired by [OpenClaw](https://github.com/steipete/openclaw) (formerly ClawdBot/
 Security is baked in, not bolted on. These are **non-negotiable hard rules**:
 
 1. **User ID whitelist** — Only respond to approved Telegram user IDs. Silently ignore everyone else. No error messages to attackers.
-2. **No web server** — Telegram long-polling only. Never expose a port. Never start an HTTP listener.
+2. **No remotely reachable HTTP listener** — Default UI is Telegram long-polling (no inbound network surface). **Bounded exception:** the optional **local HTML GUI** may start an HTTP server bound **only to loopback** (`127.0.0.1` or `::1`, never `0.0.0.0` / all interfaces). This exists so everyday users get a friendly chat + config flow without CLI or exposing a port to the LAN or internet. It is not a public web app; it is the same trust model as opening Player2’s localhost Swagger page in a browser.
 3. **Secrets in .env only** — Never in code, never in memory files, never in logs. The only exception is the embedded game key (see §3).
 4. **Tool safety** — Dangerous operations (shell, file delete, network) require explicit confirmation. Max iteration limit on the agent loop (hard ceiling: 25).
 5. **No third-party skill files** — All integrations via MCP (Model Context Protocol) — standardized, auditable, separate-process sandboxed.
 6. **Behavioral EDR/AV awareness** — The agent must never present as an autonomous threat to endpoint protection (Windows Defender, CrowdStrike, SentinelOne, etc.). All file system, shell, and network operations route through the permission system (Level 4). The baseline install ships with no unexpected writes (only to declared `data/` paths), no dynamic code loading at startup, and deterministic periodic traffic patterns (60s health pings). Tool execution will use isolated child processes where possible. The goal: a low-signal process profile on fresh OS installs.
+
+*(Rules 3–6 above are unchanged by the loopback HTML GUI; do not treat §2.1.2 as permission to expose a server on the LAN or WAN.)*
 
 ### 2.2 Lean by Design
 - **Every file has a purpose.** If you can't explain why a file exists in one sentence, it shouldn't exist.
@@ -188,7 +190,9 @@ src/
 │   ├── frontend.ts   # Frontend interface + hooks types
 │   ├── core.ts       # AgentCore wrapper for multiple frontends
 │   ├── telegram.ts   # Telegram frontend wrapper (optional at runtime)
-│   └── cli.ts        # CLI REPL frontend (optional at runtime)
+│   ├── cli.ts        # CLI REPL frontend (optional at runtime)
+│   ├── html.ts       # Loopback HTTP server + chat + config page (UI_MODE=html)
+│   └── html/public/  # Static assets for the local HTML GUI
 ├── memory/
 │   ├── index.ts      # Barrel export
 │   ├── db.ts         # sql.js init, schema, debounced persistence
@@ -204,7 +208,16 @@ src/
 │   ├── recall.ts     # Search memories (FTS5)
 │   ├── forget.ts     # Delete a memory
 │   └── high-risk-demo.ts  # Level 4 stub (risk: high)
-├── extensions/       # Optional first-party modules (empty until used) — §2.8
+├── modules/          # Module framework (Phase 1) — §4.7
+│   ├── permissions.ts # Fixed broad permission catalog (Core-owned)
+│   ├── manifest.ts    # Strict manifest.json validator
+│   ├── broker.ts      # Capability broker (ModuleContext factory)
+│   ├── loader.ts      # Scans src/extensions/*, validates, registers tools
+│   ├── audit.ts       # Append-only JSONL decision log (data/p2claw.audit.log)
+│   └── types.ts       # Shared Module / ModuleContext / ModuleTool types
+├── extensions/       # First-party modules — manifest.json + entry (§2.8, §4.7)
+│   ├── demo-safe/         # Demo module using only safe permissions
+│   └── demo-high-risk/    # Demo module declaring shell.execute (Phase 1: stubbed)
 └── types/
     └── sql.js.d.ts   # Type declarations for sql.js
 
@@ -221,9 +234,30 @@ P2 Claw supports multiple UI surfaces by keeping the agent loop single-sourced a
 
 - **Telegram frontend** (default): grammY long-polling + audio features (STT/TTS).
 - **CLI frontend**: local REPL for power users/devs.
-- **Future local HTML GUI**: will implement the same `Frontend` interface (no server shipped yet).
+- **HTML frontend** (`UI_MODE=html`): **loopback-only** HTTP server (see §2.1.2) serving a local chat UI. Binds `HTML_UI_HOST` / `HTML_UI_PORT` (defaults `127.0.0.1` / `3847`). Same `Frontend` interface + `createAgentCore`; no remote exposure.
+- The HTML GUI is fully server-hosted on localhost (`/` for chat, `/config` for settings). No `file://` shell is used.
 
-Runtime selection is via `UI_MODE` (`telegram` or `cli`). The intent is: new features land in the **core** once, and each frontend only handles input/output/UX.
+Runtime selection is via `UI_MODE` (`telegram`, `cli`, or `html`). The intent is: new features land in the **core** once, and each frontend only handles input/output/UX.
+
+### 4.7 Module framework (Phase 1)
+
+Optional capabilities and tools register through a strict module framework so Core remains the only entity that reaches dangerous primitives (shell, fs, net, credentials).
+
+**Trust model.** Phase 1 ships **in-process** modules only, and only from a hardcoded first-party allowlist. In-process modules are a **code-review** trust boundary, not an OS sandbox. Third-party / untrusted modules will land in Phase 2 as **MCP subprocesses** for OS-level isolation. A `manifest.json` that requests `runtime: "mcp"` is currently rejected with `ERR_MCP_NOT_IMPLEMENTED_PHASE1`. The `firstParty: true` manifest flag is a required informational marker, **not** a security claim — the `FIRST_PARTY_ALLOWLIST` map (which binds each allowed folder to a specific reverse-DNS id) plus the capability broker's permission and TOTP gates are the authoritative boundary.
+
+**Fixed permission catalog.** Core owns a fixed set of ~10 broad permission categories (`time.now`, `log.info`, `memory.read/write`, `fs.read_public`, `fs.read_private`, `fs.write_any`, `shell.execute`, `process.spawn`, `net.outbound`, `credentials.read`). Each is labelled `safe` or `high`. Modules cannot declare custom permissions — adding a category requires a Core release. See [src/modules/permissions.ts](src/modules/permissions.ts).
+
+**Manifest.** Each module ships a `manifest.json` validated in [src/modules/manifest.ts](src/modules/manifest.ts): reverse-DNS id, semver version, `runtime: "inprocess"`, `firstParty: true` (the module's folder name must be a key in `FIRST_PARTY_ALLOWLIST` **and** `manifest.id` must equal the reverse-DNS id that folder is bound to — this folder->id binding prevents a rename-and-swap spoof of first-party identity), permissions must be a subset of the catalog, and each tool's `requires` must be a subset of the module's declared permissions.
+
+**Capability broker.** Modules never import Node builtins directly. The loader hands each module a typed `ModuleContext` ([src/modules/broker.ts](src/modules/broker.ts), [src/modules/types.ts](src/modules/types.ts)) whose methods each (1) verify the caller's manifest declared the matching permission, (2) gate high-risk permissions through the existing TOTP approval path ([src/security/approval.ts](src/security/approval.ts)), (3) write a decision to the append-only audit log, and (4) only then dispatch the primitive. The **safe** primitives (`log.info`, `time.now`, `memory.read/write`, `fs.read_public`) are real: `memory.*` is backed by the `module_memory` SQLite table and namespaced to the caller's module id ([src/memory/module-store.ts](src/memory/module-store.ts)); `fs.read_public` is scoped to `data/public/<moduleId>/` with path-containment and a 1 MiB read cap. The **high-risk** primitives (`shell.execute`, `process.spawn`, `net.outbound`, `fs.write_any`, `fs.read_private`, `credentials.read`) remain stubbed so the gate + audit pipeline can be exercised end-to-end without shipping real in-process shell execution until Phase 2 adds subprocess isolation.
+
+**Tool integration.** Module-contributed tools are registered through the existing tools registry with `ownerModuleId` + `requiredPermissions`. [src/tools/registry.ts](src/tools/registry.ts) derives an effective risk (any high-risk permission promotes the tool to `risk: "high"`), runs the one-shot TOTP approval for the whole tool call, and wraps the handler in `runWithGrants(...)` so broker methods inside the handler see those permissions as pre-approved — no double prompting per LLM tool invocation. Broker calls made outside a tool-call context are refused for high-risk permissions in Phase 1.
+
+**Audit log.** [src/modules/audit.ts](src/modules/audit.ts) writes one JSONL line per decision to `data/p2claw.audit.log` (size-rotated at 5 MB). Arguments are SHA-256 hashed; only a short redacted summary is logged alongside the decision (`granted`, `denied`, `timeout`, `not_declared`, `error`).
+
+**Explicit non-goals (Phase 1):** MCP runtime, third-party modules, "allow once / this session / always allow" policy rules, per-action whitelisting matchers, module install UI.
+
+**Developer diagnostics (dev mode).** `P2CLAW_DEV_MODE` (boolean env var, default `false`) gates an in-tree `dev-tools` module (`com.p2claw.dev-tools`) and a `/debug` slash command in every frontend (Telegram, CLI, HTML). When dev mode is off, the loader skips `src/extensions/dev-tools/` entirely and each frontend treats `/debug` as an unknown command — the feature's existence is not leaked on normal installs. When dev mode is on, the LLM sees four read-style tools (`debug_list_tools`, `debug_inspect_module`, `debug_tail_audit`, `debug_call_tool`) and the developer can type `/debug <subcommand>` to bypass the LLM entirely; both paths go through the existing registry, capability broker, TOTP gate, and audit pipeline. `debug_call_tool` declares no permissions of its own so its effective risk stays `safe`; the **target** tool's risk continues to control whether TOTP is required on re-entry into `executeTool`. Self-recursion and nested debug calls are rejected. Every top-level debug invocation writes an explicit `kind: "debug_invocation"` record into the same JSONL audit file alongside the broker's permission decisions. Dev mode does **not** relax any security gate.
 
 ### 4.3 Agentic Tool Loop
 ```
@@ -259,7 +293,7 @@ When Level 4 tools and MCP bridge are implemented, they will enforce isolation:
 |---|---|---|
 | **MCP servers in separate processes** | Planned (Level 4) | Already aligned with MCP protocol design. Each server runs isolated. |
 | **Child processes with strict timeouts** | Planned (Level 4) | Shell/file tools will use spawned processes with resource limits, timeouts, and no inherited shell environment. |
-| **Audit logging** | Planned (Level 4) | All tool permission decisions logged to a local, human-readable `agent_audit.log` (append-only, rotated). Provides transparency and a clear event trail if an EDR flags activity. |
+| **Audit logging** | Live (Phase 1 module/tool approvals) | Permission decisions and debug invocations are written to the local JSONL audit log at `data/p2claw.audit.log` (append-only, rotated). Broader runtime/tool auditing can expand further as real shell/file/MCP surfaces land. |
 | **No in-place binary or running-file overwrites** | Hard rule (now) | The agent never modifies its own source at runtime. |
 
 > **Future considerations (not committed):** Docker/rootless container isolation for high-risk tools, and git-based diff-reviewed workflows for any self-modification capability. These would only be explored if a concrete Level 4+ use case demands them. We don't add complexity speculatively.
@@ -319,7 +353,8 @@ Named after the elephant AI mascot of the Player2 platform.
 - [ ] MCP bridge (connect external MCP servers)
 - [ ] Tool permission system (full manifest / policy surface — see `.agent/workflows/security-considerations.md`; Phase 1 adds TOTP-gated high-risk tools only)
 - [ ] Out-of-band 2FA beyond Phase 1 (e.g., local terminal or HTML prompt for approvals without Telegram)
-- [ ] Modular Frontends (Abstract Telegram interaction out so users can optionally exclusively use a local CLI or Local HTML GUI to eliminate remote attack surfaces)
+- [x] Local HTML GUI (loopback HTTP, chat + config page) — `UI_MODE=html`; see §4.6
+- [ ] Modular Frontends (further abstract Telegram so CLI/HTML-only installs are first-class)
 
 ### Level 5 — Heartbeat
 - [ ] Proactive morning briefing
@@ -351,7 +386,7 @@ Significant design decisions, recorded so future-us (or future AI) knows the **w
 
 | Date | Decision | Rationale |
 |---|---|---|
-| 2026-04-10 | Telegram-only, no web server | OpenClaw's exposed web server led to 42K+ public instances. Zero attack surface. |
+| 2026-04-10 | Telegram-first, no public web server | OpenClaw's exposed web server led to 42K+ public instances. Keep the default posture at zero remotely reachable attack surface; later loopback-only HTML remains a bounded local exception. |
 | 2026-04-10 | Player2 instead of direct OpenAI/Anthropic | Joule-based credits instead of per-token billing. Local routing. Single platform for LLM + TTS + STT + image. |
 | 2026-04-10 | grammY over Telegraf | Better TypeScript support, actively maintained, native long-polling. |
 | 2026-04-10 | OpenAI SDK for Player2 calls | Player2 exposes an OpenAI-compatible API. Why reinvent the wheel? |
@@ -375,7 +410,12 @@ Significant design decisions, recorded so future-us (or future AI) knows the **w
 | 2026-04-15 | Core memory vs optional RAG modules (§2.7) | Core keeps FTS/sql.js as the default, auditable baseline. Semantic RAG is recommended via optional packages that declare deps, data residency, and trust boundaries — avoids pretending lexical memory is sufficient for all use cases. |
 | 2026-04-15 | Extensibility + tool-surface discipline (§2.8) | Optional integrations register through explicit surfaces; MCP preferred for heavy/third-party; bounded visible tools and module map updates keep the codebase and LLM coherent as optional modules accumulate. |
 | 2026-04-15 | `DESIGN.md` maintenance + splitting guidance | Document growth managed via `docs/DESIGN_DOC_SPLITTING.md` — thin index, linked depth, split when ~800+ lines or TOC pain. |
+| 2026-04-15 | Loopback HTTP for local HTML GUI (§2.1.2) | Bounded exception to “no HTTP listener”: `127.0.0.1`/`::1` only, for user-friendly chat + hosted config page — aligns with Player2’s everyday-user audience; does not permit LAN/WAN binding. |
+| 2026-04-17 | Module framework Phase 1 — hybrid runtime, in-process first (§4.7) | Hybrid plan: first-party modules in-process (fast iteration, code-review trust), third-party via MCP later (OS-level isolation). Phase 1 ships the gate pipeline — fixed broad permission catalog, strict manifest validator, capability broker, TOTP-gated high-risk calls, append-only audit log — with primitives stubbed so the security surface is provable before real shell/fs/net land. `runtime: "mcp"` is explicitly rejected in this phase. |
+| 2026-04-18 | Module framework Phase 1.5 — unstub safe primitives (§4.7) | `memory.read/write` now round-trips through a new `module_memory` SQLite table namespaced by caller module id; `fs.read_public` reads under `data/public/<moduleId>/` with path-containment + 1 MiB cap. High-risk primitives stay stubbed until Phase 2 subprocess isolation. Adds `npm run verify` harness and lazy `P2CLAW_DB_PATH` override so the harness runs hermetically. |
+| 2026-04-18 | Module framework — bind first-party folder to expected module id (§4.7) | Prevents a folder-rename + content-swap spoof that could impersonate a first-party identity in logs and audit entries. `FIRST_PARTY_ALLOWLIST` is now a `folderName -> expected reverse-DNS id` map; validator adds `ERR_FIRST_PARTY_ID_MISMATCH` and a `npm run verify` case. Broker permission gates remain the authoritative security boundary; `firstParty: true` is now explicitly informational. |
+| 2026-04-17 | Dev-tools module + `/debug` command, env-gated (§4.7) | Adds deterministic tool invocation for both LLM-side diagnostics (`debug_call_tool`) and frontend-side diagnostics (`/debug call`) without loosening the security model. Gated by `P2CLAW_DEV_MODE`: loader skips the `src/extensions/dev-tools/` folder and every frontend treats `/debug` as unknown command when off, so normal installs carry zero extra surface. `debug_call_tool` declares no permissions itself — the target tool's effective risk still controls TOTP — and self-recursion / nested debug calls are rejected. A new `kind: "debug_invocation"` audit record sits alongside the broker's permission decisions in the same JSONL file, resolved through the now-exported `resolveAuditLogPath()` helper so the tail path never drifts from the writer path. |
 
 ---
 
-*Last updated: 2026-04-15*
+*Last updated: 2026-04-17*

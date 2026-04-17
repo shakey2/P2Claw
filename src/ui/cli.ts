@@ -11,14 +11,102 @@ import type { Frontend } from "./frontend.js";
 import { createAgentCore } from "./core.js";
 import { clearHistory, compactHistory } from "../agent.js";
 import { getMemoryCount, listMemories } from "../memory/index.js";
-import { tryApprovePendingForChat } from "../security/approval.js";
+import {
+  tryApprovePendingForChat,
+  cancelPendingForChat,
+} from "../security/approval.js";
 import { requestGracefulShutdown } from "../graceful-shutdown.js";
+import { handleDebugCommand, type DebugResult } from "./debug.js";
 
 /** Conversation history key for CLI (separate from persisted memory scope). */
 const CLI_SESSION_ID = 1;
 
 function ask(rl: readline.Interface, prompt: string): Promise<string> {
   return new Promise((resolve) => rl.question(prompt, resolve));
+}
+
+/**
+ * Splits a `/debug ...` line into subcommand + verbatim rest without
+ * tokenising the tail. This matters because `/debug call <tool> <json>`
+ * embeds JSON that may contain whitespace / quotes / braces.
+ */
+function parseDebugLine(
+  line: string
+): { subcommand: string; rest: string } {
+  const trimmed = line.trim();
+  const afterCmd = trimmed.replace(/^\/debug\b/, "").trimStart();
+  if (!afterCmd) return { subcommand: "", rest: "" };
+  const m = afterCmd.match(/^(\S+)(\s+([\s\S]*))?$/);
+  if (!m) return { subcommand: afterCmd, rest: "" };
+  return {
+    subcommand: m[1] ?? "",
+    rest: (m[3] ?? "").trim(),
+  };
+}
+
+/**
+ * Pretty-prints a structured DebugResult for the CLI. Plain text only —
+ * no Markdown, no colour codes — so output stays predictable when piped
+ * through tools like `jq` or `rg`.
+ */
+function renderDebugForCli(result: DebugResult): string {
+  switch (result.kind) {
+    case "help":
+      return result.lines.join("\n");
+    case "list": {
+      const lines = result.tools.map((t) => {
+        const owner = t.ownerModuleId ?? "core";
+        const perms = t.requiredPermissions.length
+          ? t.requiredPermissions.join(", ")
+          : "(none)";
+        return `  ${t.name}  [${t.effectiveRisk}]  owner=${owner}  perms=${perms}`;
+      });
+      return `Tools (${result.tools.length}):\n${lines.join("\n")}`;
+    }
+    case "modules": {
+      const lines = result.modules.map(
+        (m) => `  ${m.id}  v${m.version}  perms=[${m.permissions.join(", ") || "none"}]  tools=${m.tools.length}`
+      );
+      return `Loaded modules (${result.modules.length}):\n${lines.join("\n")}`;
+    }
+    case "inspect_module":
+      if (!result.module) {
+        return `No loaded module with id "${result.moduleId}".`;
+      }
+      return JSON.stringify(result.module, null, 2);
+    case "audit": {
+      const header = result.note
+        ? `Audit: ${result.path}\n(${result.note})`
+        : `Audit: ${result.path}\nLast ${result.entries.length} of ${result.n} requested:`;
+      return [header, ...result.entries].join("\n");
+    }
+    case "call":
+      return [
+        `call  ${result.meta.target}  risk=${result.meta.effectiveRisk}  owner=${result.meta.targetOwnerModuleId ?? "core"}  outcome=${result.meta.outcome}`,
+        "raw:",
+        result.meta.raw,
+      ].join("\n");
+    case "perms": {
+      const i = result.info;
+      const pending = i.pendingChallenge
+        ? `pending: tool=${i.pendingChallenge.toolName} expiresAt=${new Date(i.pendingChallenge.expiresAt).toISOString()}`
+        : "pending: (none — approvals are ephemeral one-shot challenges)";
+      return [
+        `tool: ${i.tool}`,
+        `owner: ${i.ownerModuleId ?? "core"}`,
+        `required: ${i.requiredPermissions.join(", ") || "(none)"}`,
+        `effectiveRisk: ${i.effectiveRisk}`,
+        `totpConfigured: ${i.totpConfigured}`,
+        pending,
+      ].join("\n");
+    }
+    case "unknown_subcommand":
+      return `Unknown /debug subcommand: "${result.subcommand}". Try /debug help.`;
+    case "error":
+      return `Error: ${result.message}`;
+    case "disabled":
+      return "";
+  }
 }
 
 function normalizeCode(text: string): string {
@@ -61,6 +149,61 @@ export function createCliFrontend(config: Config): Frontend {
     const [cmd, ...rest] = line.trim().split(/\s+/);
     const args = rest.join(" ").trim();
 
+    // /debug is parsed specially: the tail may contain JSON with whitespace,
+    // quotes, and braces that a generic tokeniser would mangle. We also
+    // short-circuit to "unknown command" when devMode is off, matching the
+    // Telegram + HTML frontends' behaviour (no information leak).
+    if (cmd === "/debug") {
+      if (!config.devMode) {
+        console.log(`Unknown command: ${cmd}`);
+        return true;
+      }
+      const { subcommand, rest: debugRest } = parseDebugLine(line);
+      const result = await handleDebugCommand({
+        devMode: true,
+        sessionId: CLI_SESSION_ID,
+        subcommand,
+        rest: debugRest,
+        uiMode: "cli",
+        totpSecretBase32: config.totpSecretBase32,
+        memoryScopeId: config.memoryScopeId,
+        sendPendingApproval: async (promptText: string) => {
+          console.log(`\n${promptText}\n`);
+          const secret = config.totpSecretBase32?.trim();
+          if (!secret) {
+            console.log(
+              "TOTP is not configured. Set TOTP_SECRET_BASE32 in .env and restart."
+            );
+            return;
+          }
+          if (!isInteractive) {
+            console.log(
+              "Approval required, but CLI is non-interactive. Re-run in an interactive terminal."
+            );
+            return;
+          }
+          const raw = await ask(rl, "Enter 6-digit code or type CANCEL to abort: ");
+          if (/^cancel$/i.test(raw.trim())) {
+            const r = cancelPendingForChat(CLI_SESSION_ID);
+            console.log(r.ok ? "Cancelled." : `Could not cancel: ${r.message}`);
+            return;
+          }
+          const code = normalizeCode(raw);
+          if (!/^\d{6}$/.test(code)) {
+            console.log("Not a 6-digit code.");
+            return;
+          }
+          const approvalResult = tryApprovePendingForChat(CLI_SESSION_ID, code, secret);
+          console.log(
+            approvalResult.ok ? "Approved." : `Not approved: ${approvalResult.message}`
+          );
+        },
+      });
+      const text = renderDebugForCli(result);
+      if (text) console.log(text);
+      return true;
+    }
+
     switch (cmd) {
       case "/exit":
       case "/quit": {
@@ -98,23 +241,33 @@ export function createCliFrontend(config: Config): Frontend {
         }
         return true;
       }
+      case "/cancel": {
+        const r = cancelPendingForChat(CLI_SESSION_ID);
+        console.log(r.ok ? "Cancelled. The pending action has been aborted." : r.message);
+        return true;
+      }
       case "/totp_status": {
         console.log(config.totpSecretBase32?.trim() ? "TOTP: configured." : "TOTP: not configured.");
         return true;
       }
       case "/help": {
-        console.log(
-          [
-            "Commands:",
-            "  /help         Show this help",
-            "  /memories     List recent memories",
-            "  /compact      Summarize older conversation history",
-            "  /clear        Clear conversation history (memories unaffected)",
-            "  /totp_status  Whether TOTP is configured",
-            "  /shutdown     Graceful shutdown",
-            "  /exit         Quit CLI",
-          ].join("\n")
-        );
+        const lines = [
+          "Commands:",
+          "  /help         Show this help",
+          "  /memories     List recent memories",
+          "  /compact      Summarize older conversation history",
+          "  /clear        Clear conversation history (memories unaffected)",
+          "  /cancel       Abort a pending TOTP approval request",
+          "  /totp_status  Whether TOTP is configured",
+          "  /shutdown     Graceful shutdown",
+          "  /exit         Quit CLI",
+        ];
+        if (config.devMode) {
+          lines.push(
+            "  /debug help   Developer diagnostics (P2CLAW_DEV_MODE=true)"
+          );
+        }
+        console.log(lines.join("\n"));
         return true;
       }
       default: {
@@ -145,7 +298,12 @@ export function createCliFrontend(config: Config): Frontend {
               console.log("Approval required, but CLI is non-interactive. Re-run in an interactive terminal.");
               return;
             }
-            const raw = await ask(rl, "Enter 6-digit authenticator code: ");
+            const raw = await ask(rl, "Enter 6-digit code or type CANCEL to abort: ");
+            if (/^cancel$/i.test(raw.trim())) {
+              const r = cancelPendingForChat(CLI_SESSION_ID);
+              console.log(r.ok ? "Cancelled." : `Could not cancel: ${r.message}`);
+              return;
+            }
             const code = normalizeCode(raw);
             if (!/^\d{6}$/.test(code)) {
               console.log("Not a 6-digit code.");
@@ -213,7 +371,12 @@ export function createCliFrontend(config: Config): Frontend {
                 console.log("TOTP is not configured. Set TOTP_SECRET_BASE32 in .env and restart.");
                 return;
               }
-              const raw = await ask(rl, "Enter 6-digit authenticator code: ");
+              const raw = await ask(rl, "Enter 6-digit code or type CANCEL to abort: ");
+              if (/^cancel$/i.test(raw.trim())) {
+                const r = cancelPendingForChat(CLI_SESSION_ID);
+                console.log(r.ok ? "Cancelled." : `Could not cancel: ${r.message}`);
+                return;
+              }
               const code = normalizeCode(raw);
               if (!/^\d{6}$/.test(code)) {
                 console.log("Not a 6-digit code.");

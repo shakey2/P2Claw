@@ -1,21 +1,13 @@
 /**
  * P2 Claw — Entry point.
  *
- * Boot sequence:
- *   1. Load and validate configuration
- *   2. Resolve and validate Player2 API credential
- *   3. Health-check the Player2 App
- *   4. Check joule balance
- *   5. Smoke-test chat completions
- *   6. Optionally list AI profiles
- *   7. Initialise SQLite database (memory system)
- *   8. Load personality config (data/personality.md)
- *   9. Start periodic health ping (every 60s)
- *  10. Start Telegram bot (long-polling)
+ * Boot sequence: load config → Player2 credential (skippable in HTML setup mode)
+ * → health / joules / smoke / profiles when client is live → SQLite → personality
+ * → health ping → start frontend (Telegram, CLI, or loopback HTML).
  */
 
 import { loadConfig } from "./config.js";
-import { resolveApiCredential, validateCredential } from "./security.js";
+import { resolveApiCredential, validateCredential, isCredentialConfigured } from "./security.js";
 import {
   initPlayer2,
   checkHealth,
@@ -27,13 +19,17 @@ import {
 } from "./player2.js";
 import { setActiveProfile, loadPersonality } from "./agent.js";
 import { getToolCount } from "./tools/registry.js";
+import { loadModules } from "./modules/loader.js";
 import { initDatabase, closeDatabase } from "./memory/index.js";
+import { readModuleMemory, writeModuleMemory } from "./memory/module-store.js";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { createTelegramFrontend } from "./ui/telegram.js";
 import { createCliFrontend } from "./ui/cli.js";
+import { createHtmlFrontend } from "./ui/html.js";
 import type { Frontend } from "./ui/frontend.js";
 import { registerGracefulShutdown } from "./graceful-shutdown.js";
+import { drainPendingChallenges } from "./security/approval.js";
 
 // ── Single-instance lock (prevents Telegram 409 conflict) ───────
 const LOCK_PATH = join(process.cwd(), "data", "p2claw.bot.lock");
@@ -111,60 +107,73 @@ async function boot(): Promise<void> {
   console.log(`   ✓ Default voice output: ${config.defaultVoiceMode} (per-chat: /voice)`);
   console.log(`   ✓ UI mode: ${config.uiMode}`);
 
-  // Acquire early so a watcher restart can't overlap two long-pollers.
+  if (config.devMode) {
+    console.warn("");
+    console.warn("   ⚠️  ================================================");
+    console.warn("   ⚠️  P2CLAW_DEV_MODE=true — developer diagnostics ON");
+    console.warn("   ⚠️  Dev-tools module + /debug command are loaded.");
+    console.warn("   ⚠️  Set P2CLAW_DEV_MODE=false for normal installs.");
+    console.warn("   ⚠️  (DESIGN.md §4.7)");
+    console.warn("   ⚠️  ================================================");
+    console.warn("");
+  }
+
+  // Acquire early so a watcher restart can't overlap two listeners (Telegram / HTML).
   // CLI mode does not use Telegram polling and should not be locked.
-  if (config.uiMode === "telegram") {
+  if (config.uiMode === "telegram" || config.uiMode === "html") {
     acquireBotLock();
   }
 
   // ── Step 2: Resolve API credential ────────────────────────────
   console.log("\n🔑 Resolving Player2 credentials...");
   const credential = resolveApiCredential(config.player2GameKey);
-  validateCredential(credential);
-  console.log("   ✓ Credential validated");
-
-  // ── Step 3: Init Player2 client ───────────────────────────────
-  initPlayer2(credential);
-  console.log("   ✓ Player2 client initialized");
-
-  // ── Step 4: Health check ──────────────────────────────────────
-  console.log("\n🏥 Checking Player2 App health...");
-  try {
-    const health = await checkHealth();
-    console.log(`   ✓ Player2 App online (v${health.client_version})`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`   ⚠️  Player2 App is not reachable: ${msg}`);
-    console.warn("      Make sure the Player2 App is running at http://127.0.0.1:4315");
-    console.warn("      The bot will start but LLM requests will fail until Player2 is available.");
+  const player2Live = isCredentialConfigured(credential);
+  if (player2Live) {
+    validateCredential(credential);
+    initPlayer2(credential);
+    console.log("   ✓ Credential validated");
+    console.log("   ✓ Player2 client initialized");
+  } else {
+    validateCredential(credential);
   }
 
-  // ── Step 5: Joule balance ─────────────────────────────────────
-  try {
-    const joules = await getJoules();
-    console.log(`   ⚡ Joule balance: ${joules.joules.toLocaleString()}`);
-    if (joules.patron_tier) {
-      console.log(`   👑 Patron tier: ${joules.patron_tier}`);
+  // ── Step 4–7: Player2 checks (skip if no client) ───────────────
+  if (player2Live) {
+    console.log("\n🏥 Checking Player2 App health...");
+    try {
+      const health = await checkHealth();
+      console.log(`   ✓ Player2 App online (v${health.client_version})`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`   ⚠️  Player2 App is not reachable: ${msg}`);
+      console.warn("      Make sure the Player2 App is running at http://127.0.0.1:4315");
+      console.warn("      The bot will start but LLM requests will fail until Player2 is available.");
     }
-  } catch {
-    console.warn("   ⚠️  Could not fetch joule balance");
-  }
 
-  // ── Step 6: Chat completion smoke test ────────────────────────
-  console.log("\n🧪 Smoke-testing chat completions...");
-  try {
-    const smokeResult = await smokeTestCompletion();
-    console.log(`   ✓ LLM responded: "${smokeResult}"`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`   ❌ Chat completion FAILED: ${msg}`);
-    console.error("      This means LLM requests will not work.");
-    console.error("      Check that Player2 is running and a model is selected.");
-    // Don't crash — let the bot start so the user can see /status
+    try {
+      const joules = await getJoules();
+      console.log(`   ⚡ Joule balance: ${joules.joules.toLocaleString()}`);
+      if (joules.patron_tier) {
+        console.log(`   👑 Patron tier: ${joules.patron_tier}`);
+      }
+    } catch {
+      console.warn("   ⚠️  Could not fetch joule balance");
+    }
+
+    console.log("\n🧪 Smoke-testing chat completions...");
+    try {
+      const smokeResult = await smokeTestCompletion();
+      console.log(`   ✓ LLM responded: "${smokeResult}"`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`   ❌ Chat completion FAILED: ${msg}`);
+      console.error("      This means LLM requests will not work.");
+      console.error("      Check that Player2 is running and a model is selected.");
+    }
   }
 
   // ── Step 7: Profiles ──────────────────────────────────────────
-  if (config.useProfiles) {
+  if (player2Live && config.useProfiles) {
     console.log("\n🎭 Loading AI profiles...");
     try {
       const profiles = await listProfiles();
@@ -194,7 +203,7 @@ async function boot(): Promise<void> {
     }
   }
 
-  // ── Step 7: Initialise database ───────────────────────────────
+  // ── Step 8: Initialise database ───────────────────────────────
   console.log("\n🧠 Initialising memory database...");
   try {
     await initDatabase();
@@ -204,22 +213,53 @@ async function boot(): Promise<void> {
     console.error("      Memory features will not work.");
   }
 
-  // ── Step 8: Load personality ──────────────────────────────────
+  // ── Step 9: Load personality ──────────────────────────────────
   console.log("\n🎭 Loading personality...");
   loadPersonality();
 
-  // ── Step 9: Start health ping ─────────────────────────────────
-  console.log("\n💓 Starting periodic health ping...");
-  startHealthPing();
+  // ── Step 10: Start health ping ─────────────────────────────────
+  if (player2Live) {
+    console.log("\n💓 Starting periodic health ping...");
+    startHealthPing();
+  }
 
-  // ── Step 10: Start frontend (Telegram or CLI) ─────────────────
+  // ── Step 10b: Load first-party modules ────────────────────────
+  console.log("\n🧩 Loading modules...");
+  const moduleResult = await loadModules(
+    {
+      memory: {
+        read: async (moduleId, key) => readModuleMemory(moduleId, key),
+        write: async (moduleId, key, value) => {
+          writeModuleMemory(moduleId, key, value);
+        },
+      },
+    },
+    { devMode: config.devMode }
+  );
+  if (moduleResult.loaded.length === 0 && moduleResult.rejected.length === 0) {
+    console.log("   ℹ️  No modules found in src/extensions/");
+  } else {
+    for (const m of moduleResult.loaded) {
+      console.log(`   ✓ ${m.id} (+${m.toolCount} tool${m.toolCount === 1 ? "" : "s"})`);
+    }
+    for (const r of moduleResult.rejected) {
+      console.warn(`   ⚠️  Rejected ${r.folder}: [${r.code}] ${r.reason}`);
+    }
+    console.log(
+      `   → ${moduleResult.loaded.length} loaded, ${moduleResult.rejected.length} rejected`
+    );
+  }
+
+  // ── Step 11: Start frontend (Telegram, CLI, or HTML) ──────────
   console.log(`\n🤖 Starting frontend...`);
   console.log(`   ✓ Tools loaded: ${getToolCount()}`);
 
   const frontend: Frontend =
     config.uiMode === "cli"
       ? createCliFrontend(config)
-      : createTelegramFrontend(config);
+      : config.uiMode === "html"
+        ? createHtmlFrontend(config)
+        : createTelegramFrontend(config);
 
   // Graceful shutdown — save database before exiting
   let shutdownStarted = false;
@@ -233,10 +273,14 @@ async function boot(): Promise<void> {
       );
     }
     stopHealthPing();
+    const drained = drainPendingChallenges();
+    if (drained > 0) {
+      console.log(`   ✓ Drained ${drained} pending TOTP challenge${drained === 1 ? "" : "s"} (audit records written)`);
+    }
     closeDatabase();
     console.log("   ✓ Database saved");
     void frontend.stop();
-    if (config.uiMode === "telegram") {
+    if (config.uiMode === "telegram" || config.uiMode === "html") {
       releaseBotLock();
     }
     process.exit(0);
@@ -245,7 +289,7 @@ async function boot(): Promise<void> {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   process.on("exit", () => {
-    if (config.uiMode === "telegram") {
+    if (config.uiMode === "telegram" || config.uiMode === "html") {
       releaseBotLock();
     }
   });

@@ -24,6 +24,7 @@ import {
 import {
   tryApproveWithTotp,
   tryApprovePendingForChat,
+  cancelPendingForChat,
   hasPendingApprovalForChat,
 } from "./security/approval.js";
 import {
@@ -45,6 +46,7 @@ import {
 } from "./memory/index.js";
 import { log } from "./logger.js";
 import { requestGracefulShutdown } from "./graceful-shutdown.js";
+import { handleDebugCommand, type DebugResult } from "./ui/debug.js";
 
 /**
  * Player2 TTS chunking: `/v1/tts/speak` fails on long text (often HTTP 500).
@@ -160,6 +162,111 @@ async function maybeSendTtsAfterReply(
   } catch (err: unknown) {
     await replyWithTtsError(ctx, err);
   }
+}
+
+/**
+ * Splits the tail of a `/debug ...` message into subcommand + verbatim rest.
+ * `raw` is whatever followed `/debug ` — grammY gives us this as `ctx.match`.
+ * We MUST NOT tokenise the tail because `/debug call <tool> <json>` embeds
+ * JSON that may contain whitespace / quotes / braces.
+ */
+function parseTelegramDebugMatch(
+  raw: string
+): { subcommand: string; rest: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { subcommand: "", rest: "" };
+  const m = trimmed.match(/^(\S+)(\s+([\s\S]*))?$/);
+  if (!m) return { subcommand: trimmed, rest: "" };
+  return {
+    subcommand: m[1] ?? "",
+    rest: (m[3] ?? "").trim(),
+  };
+}
+
+function escapeMarkdownV1(text: string): string {
+  return text.replace(/([_*`\[])/g, "\\$1");
+}
+
+/**
+ * Renders a DebugResult into Telegram-ready message chunks. Each chunk is
+ * ≤ 4096 chars so we can reply directly. Structured sections use Markdown
+ * for readability; raw tool output is wrapped in a triple-backtick block
+ * so the caller can safely fall back to plain text if Markdown parsing
+ * fails (the existing text-message handler already does this dance).
+ */
+function renderDebugForTelegram(result: DebugResult): string[] {
+  const body = (() => {
+    switch (result.kind) {
+      case "help":
+        return ["*Dev-tools — /debug subcommands*", ...result.lines].join("\n");
+      case "list": {
+        const lines = result.tools.map((t) => {
+          const owner = escapeMarkdownV1(t.ownerModuleId ?? "core");
+          const perms = t.requiredPermissions.length
+            ? t.requiredPermissions.map((p) => escapeMarkdownV1(p)).join(", ")
+            : "(none)";
+          return `• *${escapeMarkdownV1(t.name)}* [${t.effectiveRisk}] owner=${owner} perms=${perms}`;
+        });
+        return `*Tools (${result.tools.length})*\n${lines.join("\n")}`;
+      }
+      case "modules": {
+        if (result.modules.length === 0) return "_No loaded modules._";
+        const lines = result.modules.map(
+          (m) =>
+            `• *${escapeMarkdownV1(m.id)}* v${escapeMarkdownV1(m.version)} — perms=[${m.permissions.join(", ") || "none"}] tools=${m.tools.length}`
+        );
+        return `*Loaded modules (${result.modules.length})*\n${lines.join("\n")}`;
+      }
+      case "inspect_module":
+        if (!result.module) {
+          return `No loaded module with id \`${escapeMarkdownV1(result.moduleId)}\`.`;
+        }
+        return "```\n" + JSON.stringify(result.module, null, 2) + "\n```";
+      case "audit": {
+        const header = result.note
+          ? `*Audit*: \`${result.path}\`\n_${result.note}_`
+          : `*Audit*: \`${result.path}\`\nLast ${result.entries.length} of ${result.n} requested:`;
+        // Raw JSONL — never Markdown-format each line; users pipe through jq.
+        const block = result.entries.length
+          ? "\n```\n" + result.entries.join("\n") + "\n```"
+          : "";
+        return header + block;
+      }
+      case "call": {
+        const m = result.meta;
+        const meta =
+          `*debug call*\n` +
+          `target: \`${escapeMarkdownV1(m.target)}\`\n` +
+          `owner: \`${escapeMarkdownV1(m.targetOwnerModuleId ?? "core")}\`\n` +
+          `risk: ${m.effectiveRisk}\n` +
+          `outcome: ${m.outcome}`;
+        // Wrap raw in a fenced block so backticks/angles in the payload
+        // don't collide with Markdown.
+        return meta + "\n*raw:*\n```\n" + m.raw + "\n```";
+      }
+      case "perms": {
+        const i = result.info;
+        const pending = i.pendingChallenge
+          ? `pending: tool=\`${escapeMarkdownV1(i.pendingChallenge.toolName)}\` expires=${new Date(i.pendingChallenge.expiresAt).toISOString()}`
+          : "pending: _(none — approvals are ephemeral one-shot challenges)_";
+        return (
+          `*perms* \`${escapeMarkdownV1(i.tool)}\`\n` +
+          `owner: \`${escapeMarkdownV1(i.ownerModuleId ?? "core")}\`\n` +
+          `required: ${i.requiredPermissions.join(", ") || "(none)"}\n` +
+          `effectiveRisk: ${i.effectiveRisk}\n` +
+          `totpConfigured: ${i.totpConfigured}\n` +
+          pending
+        );
+      }
+      case "unknown_subcommand":
+        return `Unknown /debug subcommand: \`${escapeMarkdownV1(result.subcommand)}\`. Try \`/debug help\`.`;
+      case "error":
+        return `Error: ${result.message}`;
+      case "disabled":
+        return "";
+    }
+  })();
+  return splitMessage(body, 4096);
 }
 
 function buildProcessMessageOptions(config: Config, ctx: Context): ProcessMessageOptions {
@@ -278,6 +385,22 @@ export function createBot(config: Config): Bot {
       return;
     }
 
+    // CANCEL: user aborts the pending TOTP challenge without providing a code.
+    if (/^CANCEL\s*$/i.test(text)) {
+      if (!pending) {
+        await ctx.reply("There is no pending high-risk action to cancel.");
+        return;
+      }
+      const result = cancelPendingForChat(chatId);
+      console.log(`   TOTP cancel ok=${result.ok}`);
+      await ctx.reply(
+        result.ok
+          ? "Cancelled. The pending action has been aborted. The bot has been informed."
+          : `Could not cancel: ${result.message}`
+      );
+      return;
+    }
+
     // If an approval is pending, do not allow other chat messages to queue behind the agent.
     // Let commands through (e.g. /status) so the bot stays operable.
     if (pending && secret) {
@@ -346,6 +469,9 @@ export function createBot(config: Config): Bot {
         "",
         "When a high-risk tool runs, reply with only the 6-digit code, or:",
         "APPROVE <challengeId> <6-digit-code>",
+        "",
+        "To abort without approving, reply:",
+        "CANCEL",
       ].join("\n")
     );
   });
@@ -357,6 +483,37 @@ export function createBot(config: Config): Bot {
     // Same path as Ctrl+C — self-SIGINT is unreliable under `tsx watch` on Windows.
     requestGracefulShutdown();
   });
+
+  // ── /debug command (DEV MODE ONLY) ───────────────────────────
+  // Registered only when P2CLAW_DEV_MODE=true. When dev mode is off the
+  // command is simply not bound — grammY will not respond, matching the
+  // "unknown command" contract in DESIGN.md §4.7 (no information leak).
+  if (config.devMode) {
+    bot.command("debug", async (ctx) => {
+      const chatId = ctx.chat?.id;
+      if (chatId === undefined) return;
+      const { subcommand, rest } = parseTelegramDebugMatch(ctx.match ?? "");
+      const result = await handleDebugCommand({
+        devMode: true,
+        sessionId: chatId,
+        subcommand,
+        rest,
+        uiMode: "telegram",
+        totpSecretBase32: config.totpSecretBase32,
+        memoryScopeId: config.memoryScopeId,
+        sendPendingApproval: async (text: string) => {
+          await ctx.reply(text);
+        },
+      });
+      const chunks = renderDebugForTelegram(result);
+      for (const chunk of chunks) {
+        if (!chunk) continue;
+        await ctx.reply(chunk, { parse_mode: "Markdown" }).catch(() => {
+          return ctx.reply(chunk);
+        });
+      }
+    });
+  }
 
   // ── /start command ──────────────────────────────────────────
   bot.command("start", async (ctx) => {

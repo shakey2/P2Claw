@@ -80,6 +80,19 @@ export function resolveApiCredential(envValue: string): string {
 }
 
 /**
+ * Returns true if the resolved credential is non-empty and not a known placeholder.
+ * Used at boot to determine whether Player2 is configured.
+ */
+export function isCredentialConfigured(credential: string): boolean {
+  return (
+    !!credential &&
+    credential.length >= 8 &&
+    credential !== _PLACEHOLDER &&
+    credential !== "your_player2_game_key_here"
+  );
+}
+
+/**
  * Validates that a resolved credential is actually usable.
  * If not, prints a user-facing error and exits.
  *
@@ -89,13 +102,7 @@ export function resolveApiCredential(envValue: string): string {
  * @param credential - The resolved credential from resolveApiCredential()
  */
 export function validateCredential(credential: string): void {
-  const invalid =
-    !credential ||
-    credential.length < 8 ||
-    credential === _PLACEHOLDER ||
-    credential === "your_player2_game_key_here";
-
-  if (invalid) {
+  if (!isCredentialConfigured(credential)) {
     console.error(
       "\n╔══════════════════════════════════════════════════════════════╗"
     );

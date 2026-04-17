@@ -1,0 +1,214 @@
+:root {
+  font-family: system-ui, Segoe UI, Roboto, sans-serif;
+  background: #0f1419;
+  color: #e7ecf1;
+}
+
+body {
+  margin: 0;
+  max-width: 52rem;
+  margin-inline: auto;
+  padding: 1rem 1.25rem 2rem;
+}
+
+.top h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.35rem;
+}
+
+.sub {
+  margin: 0 0 0.75rem;
+  color: #8b9aab;
+  font-size: 0.9rem;
+}
+
+nav a {
+  color: #6ec8ff;
+}
+
+.nav-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+}
+
+.product-name {
+  color: #8b9aab;
+  font-weight: 600;
+}
+
+.btn-quiet {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.85rem;
+  border-radius: 6px;
+  border: 1px solid #3d4f63;
+  background: transparent;
+  color: #c4d0dc;
+  cursor: pointer;
+}
+
+.btn-quiet:hover {
+  border-color: #6b7d91;
+  color: #fff;
+}
+
+.shutdown-note {
+  color: #8b9aab;
+  font-size: 0.9rem;
+}
+
+.shutdown-note.visible {
+  color: #a7f3d0;
+}
+
+.chat.offline .log {
+  opacity: 0.8;
+}
+
+.chat.offline textarea,
+.chat.offline button[type="submit"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.chat textarea:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.chat button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: #2b3a52;
+}
+
+.chat .log {
+  min-height: 12rem;
+  max-height: 50vh;
+  overflow: auto;
+  padding: 0.75rem;
+  background: #151c24;
+  border-radius: 8px;
+  border: 1px solid #243040;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.95rem;
+}
+
+.chat .row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  align-items: flex-end;
+}
+
+.chat textarea {
+  flex: 1;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid #243040;
+  background: #151c24;
+  color: inherit;
+  resize: vertical;
+}
+
+.chat button {
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: none;
+  background: #2563eb;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chat button:hover {
+  background: #1d4ed8;
+}
+
+.approval {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  background: #1a2330;
+  border-radius: 8px;
+  border: 1px solid #f59e0b;
+}
+
+.approval.hidden {
+  display: none;
+}
+
+.approval input {
+  margin-left: 0.35rem;
+  padding: 0.35rem;
+  width: 8rem;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  align-items: center;
+}
+
+.btn-cancel {
+  background: transparent;
+  color: #9ca3af;
+  border: 1px solid #374151;
+  padding: 0.3rem 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.btn-cancel:hover {
+  border-color: #6b7280;
+  color: #d1d5db;
+}
+
+.setup label {
+  display: block;
+  margin-bottom: 0.75rem;
+}
+
+.setup input,
+.setup select {
+  display: block;
+  width: 100%;
+  max-width: 28rem;
+  margin-top: 0.25rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid #243040;
+  background: #151c24;
+  color: inherit;
+}
+
+.setup button[type="submit"] {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: none;
+  background: #059669;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.hint {
+  font-size: 0.85rem;
+  color: #8b9aab;
+}
+
+.msg {
+  margin-top: 1rem;
+  color: #a7f3d0;
+}
+
+code {
+  font-size: 0.9em;
+  background: #151c24;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}

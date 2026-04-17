@@ -1,0 +1,72 @@
+{
+  "id": "com.p2claw.dev-tools",
+  "name": "Dev Tools",
+  "version": "0.1.0",
+  "description": "First-party developer diagnostics module. Loaded only when P2CLAW_DEV_MODE=true. Exposes debug_list_tools / debug_inspect_module / debug_tail_audit / debug_call_tool for LLM-side introspection of the tool framework. See DESIGN.md §4.7.",
+  "runtime": "inprocess",
+  "firstParty": true,
+  "entry": "index.js",
+  "permissions": ["log.info"],
+  "tools": [
+    {
+      "name": "debug_list_tools",
+      "description": "Lists every registered tool with its description, parameter schema, owner module id, required permissions, and effective risk. Read-only.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "requires": []
+    },
+    {
+      "name": "debug_inspect_module",
+      "description": "Returns a snapshot of a loaded module by reverse-DNS id: declared permissions, runtime, firstParty flag, and per-tool requires. Read-only.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "moduleId": {
+            "type": "string",
+            "description": "Reverse-DNS module id, e.g. com.p2claw.demo-safe."
+          }
+        },
+        "required": ["moduleId"]
+      },
+      "requires": []
+    },
+    {
+      "name": "debug_tail_audit",
+      "description": "Tails the last N entries from the active audit log (as raw JSONL). N defaults to 20 and is capped at 200. Read-only.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "number",
+            "description": "Number of most-recent lines to return. Default 20, max 200."
+          }
+        },
+        "required": []
+      },
+      "requires": []
+    },
+    {
+      "name": "debug_call_tool",
+      "description": "Force-invokes a target tool through the normal registry path with the given args. Every broker gate still fires; high-risk targets still require TOTP. Rejects self-recursion and nested debug calls. Returns the raw target result plus target metadata.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Name of the target tool to invoke."
+          },
+          "args": {
+            "type": "object",
+            "description": "Structured argument object passed to the target tool.",
+            "additionalProperties": true
+          }
+        },
+        "required": ["target", "args"]
+      },
+      "requires": []
+    }
+  ]
+}

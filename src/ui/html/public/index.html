@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>P2 Claw — Local chat</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <h1 id="heading"><span id="botName">Ellie</span></h1>
+    <p class="sub"><span class="product-name">P2 Claw</span> · local-only · same machine as this browser</p>
+    <nav class="nav-row">
+      <a href="/config" class="btn-quiet" role="button">Config</a>
+      <button type="button" id="shutdownBtn" class="btn-quiet" title="Stop the P2 Claw process (same as Ctrl+C in the terminal)">Shut down</button>
+      <span id="shutdownNote" class="shutdown-note" aria-live="polite"></span>
+    </nav>
+  </header>
+
+  <main class="chat">
+    <div id="log" class="log" aria-live="polite"></div>
+    <div id="approval" class="approval hidden">
+      <p id="approvalText"></p>
+      <label>6-digit code <input type="text" id="approvalCode" maxlength="10" autocomplete="one-time-code" /></label>
+      <div class="approval-actions">
+        <button type="button" id="approvalBtn">Submit code</button>
+        <button type="button" id="approvalCancelBtn" class="btn-cancel">Cancel</button>
+      </div>
+    </div>
+    <form id="form" class="row">
+      <textarea id="input" rows="2" placeholder="Message…" required></textarea>
+      <button type="submit">Send</button>
+    </form>
+  </main>
+
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

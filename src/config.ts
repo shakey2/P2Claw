@@ -10,7 +10,7 @@ import "dotenv/config";
 
 /** Text-to-speech delivery: off, Telegram voice note, or Player2 app speakers */
 export type VoiceOutputMode = "off" | "tg" | "pc";
-export type UiMode = "telegram" | "cli";
+export type UiMode = "telegram" | "cli" | "html";
 
 export interface Config {
   /** Player2 Game Client ID (resolved by security module) */
@@ -31,7 +31,10 @@ export interface Config {
   /** Max iterations for the agentic tool loop */
   maxAgentIterations: number;
 
-  /** Bot display name */
+  /**
+   * Persona / assistant display name (`BOT_NAME`). Default **Ellie** — Player2’s elephant mascot.
+   * Used in the system prompt, Telegram copy, and the local HTML UI title.
+   */
   botName: string;
 
   /** Default voice output when a chat has no stored preference */
@@ -39,6 +42,12 @@ export interface Config {
 
   /** Which UI frontend to run. */
   uiMode: UiMode;
+
+  /** Loopback bind address for `UI_MODE=html` (must stay loopback — see DESIGN.md §2.1.2). */
+  htmlBindHost: string;
+
+  /** TCP port for the local HTML GUI. */
+  htmlBindPort: number;
 
   /**
    * RFC 6238 TOTP shared secret (Base32) for high-risk tool approval.
@@ -52,6 +61,21 @@ export interface Config {
    * are read/written regardless of Telegram `chat.id` or CLI session id.
    */
   memoryScopeId: number;
+
+  /**
+   * Developer diagnostics mode (`P2CLAW_DEV_MODE`). Default false.
+   *
+   * When true:
+   *   - the loader scans `src/extensions/dev-tools/` and registers its tools
+   *     (debug_list_tools, debug_inspect_module, debug_tail_audit,
+   *     debug_call_tool).
+   *   - every frontend enables the `/debug` slash command.
+   *
+   * When false, neither surface exists — `/debug` is treated as "unknown
+   * command" so the feature does not leak in normal installs. Does NOT
+   * relax the TOTP gate or the broker audit. See DESIGN.md §4.7.
+   */
+  devMode: boolean;
 }
 
 // ── Hard-coded absolute safety ceiling ──────────────────────────
@@ -80,8 +104,34 @@ function parseUiMode(raw: string | undefined): UiMode {
   const v = (raw ?? "telegram").trim().toLowerCase();
   if (v === "telegram" || v === "tg") return "telegram";
   if (v === "cli" || v === "terminal") return "cli";
-  console.warn(`⚠️  Invalid UI_MODE "${raw ?? ""}". Expected telegram or cli. Using telegram.`);
+  if (v === "html" || v === "web" || v === "gui") return "html";
+  console.warn(
+    `⚠️  Invalid UI_MODE "${raw ?? ""}". Expected telegram, cli, or html. Using telegram.`
+  );
   return "telegram";
+}
+
+const PLACEHOLDER_BOT = "your_telegram_bot_token_here";
+const PLACEHOLDER_USER_IDS = "123456789";
+
+function parseHtmlBindHost(raw: string | undefined): string {
+  const v = (raw ?? "127.0.0.1").trim().toLowerCase();
+  if (v === "127.0.0.1" || v === "localhost" || v === "::1") {
+    return v === "localhost" ? "127.0.0.1" : v;
+  }
+  console.warn(
+    `⚠️  HTML_UI_HOST "${v}" is not a loopback address. Forcing 127.0.0.1 (DESIGN.md §2.1.2).`
+  );
+  return "127.0.0.1";
+}
+
+function parseHtmlBindPort(raw: string | undefined): number {
+  const n = parseInt(raw ?? "3847", 10);
+  if (!Number.isFinite(n) || n < 1 || n > 65535) {
+    console.warn(`⚠️  Invalid HTML_UI_PORT. Using 3847.`);
+    return 3847;
+  }
+  return n;
 }
 
 function parseMemoryScopeId(raw: string | undefined): number {
@@ -98,35 +148,51 @@ function parseMemoryScopeId(raw: string | undefined): number {
 }
 
 export function loadConfig(): Config {
-  // ── Telegram Bot Token ──────────────────────────────────────────
-  const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
-  if (!telegramBotToken || telegramBotToken === "your_telegram_bot_token_here") {
-    fatal(
-      "TELEGRAM_BOT_TOKEN is missing or still set to placeholder.\n" +
-      "  1. Open Telegram and message @BotFather\n" +
-      "  2. Send /newbot and follow the prompts\n" +
-      "  3. Copy the token into your .env file"
-    );
-  }
+  const uiMode = parseUiMode(process.env.UI_MODE);
+  const htmlBindHost = parseHtmlBindHost(process.env.HTML_UI_HOST);
+  const htmlBindPort = parseHtmlBindPort(process.env.HTML_UI_PORT);
 
-  // ── Allowed User IDs ────────────────────────────────────────────
-  const rawUserIds = process.env.TELEGRAM_ALLOWED_USER_IDS?.trim();
-  if (!rawUserIds || rawUserIds === "123456789") {
-    fatal(
-      "TELEGRAM_ALLOWED_USER_IDS is missing or still set to placeholder.\n" +
-      "  1. Open Telegram and message @userinfobot\n" +
-      "  2. It will reply with your numeric user ID\n" +
-      "  3. Paste that number into your .env file"
-    );
-  }
+  // ── Telegram Bot Token & allowlist ───────────────────────────────
+  let telegramBotToken = process.env.TELEGRAM_BOT_TOKEN?.trim() ?? "";
+  let rawUserIds = process.env.TELEGRAM_ALLOWED_USER_IDS?.trim() ?? "";
 
-  const allowedUserIds = rawUserIds.split(",").map((id) => {
-    const parsed = parseInt(id.trim(), 10);
-    if (isNaN(parsed)) {
-      fatal(`Invalid user ID "${id.trim()}" in TELEGRAM_ALLOWED_USER_IDS. Must be numeric.`);
+  // Telegram settings are only required when using the Telegram UI.
+  // HTML + CLI can run without Telegram configured.
+  if (uiMode === "telegram") {
+    if (!telegramBotToken || telegramBotToken === PLACEHOLDER_BOT) {
+      fatal(
+        "TELEGRAM_BOT_TOKEN is missing or still set to placeholder.\n" +
+          "  1. Open Telegram and message @BotFather\n" +
+          "  2. Send /newbot and follow the prompts\n" +
+          "  3. Copy the token into your .env file\n"
+      );
     }
-    return parsed;
-  });
+    if (!rawUserIds || rawUserIds === PLACEHOLDER_USER_IDS) {
+      fatal(
+        "TELEGRAM_ALLOWED_USER_IDS is missing or still set to placeholder.\n" +
+          "  1. Open Telegram and message @userinfobot\n" +
+          "  2. It will reply with your numeric user ID\n" +
+          "  3. Paste that number into your .env file"
+      );
+    }
+  } else {
+    // Keep placeholders benign for non-Telegram modes.
+    if (!telegramBotToken) telegramBotToken = PLACEHOLDER_BOT;
+    if (!rawUserIds) rawUserIds = "";
+  }
+
+  const allowedUserIds =
+    rawUserIds.trim().length === 0
+      ? []
+      : rawUserIds.split(",").map((id) => {
+          const parsed = parseInt(id.trim(), 10);
+          if (isNaN(parsed)) {
+            fatal(
+              `Invalid user ID "${id.trim()}" in TELEGRAM_ALLOWED_USER_IDS. Must be numeric.`
+            );
+          }
+          return parsed;
+        });
 
   // ── Player2 Game Key ────────────────────────────────────────────
   // NOTE: The actual key resolution (including obfuscated fallback)
@@ -156,14 +222,13 @@ export function loadConfig(): Config {
   // ── Voice output default (per-chat override via /voice) ─────────
   const defaultVoiceMode = parseVoiceOutputMode(process.env.DEFAULT_VOICE_MODE);
 
-  // ── UI mode (Telegram or CLI) ─────────────────────────────────
-  const uiMode = parseUiMode(process.env.UI_MODE);
-
   // ── TOTP (Level 4 high-risk approvals) ─────────────────────────
   const totpRaw = process.env.TOTP_SECRET_BASE32?.trim() ?? "";
   const totpSecretBase32 = totpRaw.length > 0 ? totpRaw : undefined;
 
   const memoryScopeId = parseMemoryScopeId(process.env.P2CLAW_MEMORY_CHAT_ID);
+
+  const devMode = parseBool(process.env.P2CLAW_DEV_MODE);
 
   return {
     player2GameKey,
@@ -175,7 +240,20 @@ export function loadConfig(): Config {
     botName,
     defaultVoiceMode,
     uiMode,
+    htmlBindHost,
+    htmlBindPort,
     totpSecretBase32,
     memoryScopeId,
+    devMode,
   };
+}
+
+/**
+ * Accept "true" / "1" / "yes" / "on" as truthy. Anything else (including
+ * empty / unset) is false. Used for opt-in developer-only switches where
+ * we specifically want fail-closed behaviour.
+ */
+function parseBool(raw: string | undefined): boolean {
+  const v = (raw ?? "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "yes" || v === "on";
 }

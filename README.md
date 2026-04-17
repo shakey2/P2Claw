@@ -1,6 +1,6 @@
 # P2 Claw
 
-A lean, secure personal AI agent powered by [Player2](https://player2.game), controlled entirely via Telegram. No web server, no exposed ports, no untrusted code.
+A lean, secure personal AI agent powered by [Player2](https://player2.game). Default UI is Telegram; optional **loopback-only** web chat lives at `http://127.0.0.1` (see `DESIGN.md` §2.1.2). No public web server, no untrusted skill loading.
 
 > Inspired by the [OpenClaw](https://github.com/steipete/openclaw) project — rebuilt from scratch so every line is understood.
 
@@ -32,15 +32,17 @@ npm install
 npm run dev
 ```
 
-### UI Mode: Telegram or CLI
+### UI Mode: Telegram, CLI, or local HTML
 
-By default, P2 Claw runs the Telegram frontend. You can run **CLI-only** by setting:
+By default, P2 Claw runs the Telegram frontend.
+
+**CLI** — set:
 
 ```env
 UI_MODE=cli
 ```
 
-Then start as usual (interactive REPL).
+Then start as usual (interactive REPL). Audio features (STT/TTS) remain Telegram-only for now.
 If you use `npm run dev`, it runs a watcher; that's great for development, but it may restart the process when files change. For CLI mode, `npm run start` is usually smoother:
 
 ```bash
@@ -53,7 +55,12 @@ Or:
 npm run start
 ```
 
-In CLI mode, type `/help` for commands. Audio features (STT/TTS) remain Telegram-only for now.
+In CLI mode, type `/help` for commands.
+
+**Local HTML** — set `UI_MODE=html`. The app listens on **loopback only** (default `127.0.0.1:3847`) and serves the full GUI from that same origin.
+
+- Windows “double-click to use”: run `start.bat` in the repo root (starts P2 Claw and opens `http://127.0.0.1:3847/`).
+- Chat is at `/` and config is at `/config`.
 
 You can also launch CLI directly on Windows:
 
@@ -76,7 +83,8 @@ Edit your `.env` file:
 | `TELEGRAM_BOT_TOKEN` | Telegram → [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token |
 | `TELEGRAM_ALLOWED_USER_IDS` | Telegram → [@userinfobot](https://t.me/userinfobot) → it replies with your numeric ID |
 | `DEFAULT_VOICE_MODE` | Optional. `off` (default), `tg` (voice note after replies), or `pc` (speak via Player2 on this PC). Per-chat override: `/voice` |
-| `UI_MODE` | Optional. `telegram` (default) or `cli`. Controls which frontend starts. |
+| `UI_MODE` | Optional. `telegram` (default), `cli`, or `html` (loopback web UI). |
+| `HTML_UI_HOST` / `HTML_UI_PORT` | Optional. Loopback bind for `UI_MODE=html` (default `127.0.0.1` / `3847`). |
 | `TOTP_SECRET_BASE32` | Optional until you use high-risk tools. RFC 6238 secret (Base32) shared with Google Authenticator / Aegis — same value as in the app. |
 
 **Important:** Never commit your `.env`. It contains secrets (Telegram bot token, allowed user IDs). This repo ignores `.env` by default via `.gitignore`.
@@ -88,7 +96,7 @@ That's it. The Player2 API connection is built in — just make sure the Player2
 ## 🔒 Security
 
 - **User whitelist** — Only responds to Telegram user IDs listed in your `.env`. Everyone else is silently ignored.
-- **No web server** — Uses Telegram's long-polling. Zero open ports. Nothing to scan or attack.
+- **No public web server** — Telegram uses long-polling by default, and the optional HTML UI binds to loopback only (`127.0.0.1` / `::1`). Nothing is exposed to the LAN or internet by default.
 - **Secrets in .env only** — Your Telegram token never appears in code or logs.
 - **Local-first** — Everything runs on your machine. Messages are processed locally via Player2.
 - **Level 4 Phase 1 — TOTP approvals** — High-risk tools (demo: `high_risk_demo`) ask for your authenticator code. While a challenge is open, send **only the 6-digit code** in Telegram (or `APPROVE <8-char-id> <code>`). Those messages are handled **before** the AI sees them, so they are not added to model context or chat history. Set `TOTP_SECRET_BASE32` in `.env` (see `.env.example`). See [`.agent/workflows/security-considerations.md`](.agent/workflows/security-considerations.md) for why permission boundaries stay in the bot, not the LLM.
@@ -169,7 +177,7 @@ User (Telegram) ←→ grammY (long-polling) ←→ Agent Loop ←→ Player2 Ap
                                            Tool Registry
 ```
 
-- **No HTTP server** — grammY polls Telegram's API directly
+- **No public HTTP server** — Telegram uses long-polling; the optional HTML frontend is a loopback-only local server
 - **Agentic loop** — LLM can call tools, inspect results, and iterate (capped at configurable max)
 - **Player2 as gateway** — All AI models accessed through the local Player2 App at `127.0.0.1:4315`
 - **60s health ping** — Periodically pings Player2 `/v1/health` for time-spent tracking
@@ -184,25 +192,43 @@ src/
 ├── player2.ts            # Player2/OpenAI SDK client + health ping
 ├── bot.ts                # Telegram bot setup & message routing
 ├── agent.ts              # Agentic tool loop
-├── ui/                   # Frontends (Telegram, CLI; future local HTML GUI)
+├── ui/                   # Frontends (Telegram, CLI, loopback HTML)
 │   ├── core.ts            # Shared agent core wrapper for frontends
 │   ├── frontend.ts        # Frontend interface + hooks types
 │   ├── telegram.ts        # Telegram frontend wrapper
-│   └── cli.ts             # CLI REPL frontend
+│   ├── cli.ts             # CLI REPL frontend
+│   ├── html.ts            # Loopback HTTP server + chat + config page
+│   └── html/public/       # Static assets for the loopback HTML GUI
+├── memory/
+│   ├── index.ts          # Provider router + barrel export
+│   ├── db.ts             # sql.js init, schema, debounced persistence
+│   ├── store.ts          # Memory CRUD + FTS5 search
+│   └── module-store.ts   # Per-module KV store (backs ctx.memory in broker)
 ├── security/
 │   ├── totp.ts           # RFC 6238 verification (Node crypto)
 │   └── approval.ts       # Pending challenges + TOTP gate
-└── tools/
-    ├── registry.ts       # Tool registration, dispatch, high-risk TOTP gate
-    ├── tool-types.ts     # Shared ToolDefinition (avoids import cycles)
-    ├── get-current-time.ts
-    ├── remember.ts
-    ├── recall.ts
-    ├── forget.ts
-    └── high-risk-demo.ts # Stub high-risk tool (Level 4 Phase 1)
+├── tools/
+│   ├── registry.ts       # Tool registration, dispatch, high-risk TOTP gate
+│   ├── tool-types.ts     # Shared ToolDefinition (avoids import cycles)
+│   ├── get-current-time.ts
+│   ├── remember.ts
+│   ├── recall.ts
+│   ├── forget.ts
+│   └── high-risk-demo.ts # Stub high-risk tool (Level 4 Phase 1)
+├── modules/              # Module framework (DESIGN.md §4.7)
+│   ├── permissions.ts    # Fixed broad permission catalog
+│   ├── manifest.ts       # Strict manifest.json validator
+│   ├── broker.ts         # Capability broker (TOTP-gated)
+│   ├── loader.ts         # Scans src/extensions/* and registers tools
+│   ├── audit.ts          # Append-only JSONL decision log
+│   └── types.ts          # Shared Module / ModuleContext / ModuleTool types
+└── extensions/           # First-party modules (allowlisted)
+    ├── demo-safe/        # Exercises safe primitives (memory + fs.read_public)
+    └── demo-high-risk/   # Exercises TOTP gate (shell.execute stubbed)
 
 scripts/
-└── encode-key.ts         # Utility to encode your game key for embedding
+├── encode-key.ts         # Utility to encode your game key for embedding
+└── verify-modules.ts     # npm run verify — module framework integration check
 ```
 
 ### Embedding the Player2 Game Key

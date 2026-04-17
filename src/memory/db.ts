@@ -23,8 +23,19 @@ import { log } from "../logger.js";
 
 /** Repo root (works for `tsx src/...` and `node dist/...`, not only `cwd`). */
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const DB_PATH = join(PKG_ROOT, "data", "p2claw.db");
+const DEFAULT_DB_PATH = join(PKG_ROOT, "data", "p2claw.db");
 const SAVE_DEBOUNCE_MS = 1_000;
+
+/**
+ * Resolves the SQLite file location. Honors the `P2CLAW_DB_PATH` env var so
+ * scripts (e.g. verify-modules) can run against an isolated DB without
+ * touching the user's real memory store. Evaluated lazily so scripts can
+ * override `process.env.P2CLAW_DB_PATH` at top-level before calling
+ * `initDatabase()`. Falls back to data/p2claw.db.
+ */
+function getDbPath(): string {
+  return process.env.P2CLAW_DB_PATH?.trim() || DEFAULT_DB_PATH;
+}
 
 let _db: Database | null = null;
 
@@ -52,19 +63,20 @@ let _saveTimer: ReturnType<typeof setTimeout> | null = null;
  */
 export async function initDatabase(): Promise<void> {
   const SQL = await initSqlJs();
+  const dbPath = getDbPath();
 
   // Ensure data/ directory exists
-  const dataDir = dirname(DB_PATH);
+  const dataDir = dirname(dbPath);
   if (!existsSync(dataDir)) {
     mkdirSync(dataDir, { recursive: true });
   }
 
   // Load existing database or create fresh
-  if (existsSync(DB_PATH)) {
-    const fileBuffer = readFileSync(DB_PATH);
+  if (existsSync(dbPath)) {
+    const fileBuffer = readFileSync(dbPath);
     _db = new SQL.Database(fileBuffer);
-    log.info(`Loaded existing database from ${DB_PATH}`);
-    console.log(`   ✓ Loaded existing database from ${DB_PATH}`);
+    log.info(`Loaded existing database from ${dbPath}`);
+    console.log(`   ✓ Loaded existing database from ${dbPath}`);
   } else {
     _db = new SQL.Database();
     log.info("Created new database");
@@ -118,6 +130,19 @@ function createSchema(db: Database): void {
       chat_id INTEGER PRIMARY KEY NOT NULL,
       voice_mode TEXT NOT NULL DEFAULT 'off',
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Per-module KV store. Each row is owned by exactly one module_id so
+  // `ctx.memory.read/write` in the broker is naturally namespaced — module A
+  // cannot see or overwrite module B's rows. See src/memory/module-store.ts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS module_memory (
+      module_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (module_id, key)
     );
   `);
 
@@ -217,14 +242,15 @@ export function saveDatabase(): void {
 
   const data = _db.export();
   const buffer = Buffer.from(data);
+  const dbPath = getDbPath();
 
   // Ensure data/ directory exists (defensive — should already exist)
-  const dataDir = dirname(DB_PATH);
+  const dataDir = dirname(dbPath);
   if (!existsSync(dataDir)) {
     mkdirSync(dataDir, { recursive: true });
   }
 
-  writeFileSync(DB_PATH, buffer);
+  writeFileSync(dbPath, buffer);
   log.debug("Database saved to disk");
 }
 
