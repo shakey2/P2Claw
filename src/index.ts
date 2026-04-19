@@ -19,7 +19,7 @@ import {
 } from "./player2.js";
 import { setActiveProfile, loadPersonality } from "./agent.js";
 import { getToolCount } from "./tools/registry.js";
-import { loadModules } from "./modules/loader.js";
+import { loadModules, stopAllMcpHosts } from "./modules/loader.js";
 import { initDatabase, closeDatabase } from "./memory/index.js";
 import { readModuleMemory, writeModuleMemory } from "./memory/module-store.js";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
@@ -234,7 +234,10 @@ async function boot(): Promise<void> {
         },
       },
     },
-    { devMode: config.devMode }
+    {
+      devMode: config.devMode,
+      mcpCallTimeoutMs: config.mcpCallTimeoutMs,
+    }
   );
   if (moduleResult.loaded.length === 0 && moduleResult.rejected.length === 0) {
     console.log("   ℹ️  No modules found in src/extensions/");
@@ -266,24 +269,39 @@ async function boot(): Promise<void> {
   const shutdown = () => {
     if (shutdownStarted) return;
     shutdownStarted = true;
-    console.log("\n👋 Shutting down P2 Claw...");
-    if (process.env.npm_lifecycle_event === "dev") {
-      console.log(
-        "   Under `npm run dev`, tsx may restart this process. Press Ctrl+C in the terminal to stop the watcher."
-      );
-    }
-    stopHealthPing();
-    const drained = drainPendingChallenges();
-    if (drained > 0) {
-      console.log(`   ✓ Drained ${drained} pending TOTP challenge${drained === 1 ? "" : "s"} (audit records written)`);
-    }
-    closeDatabase();
-    console.log("   ✓ Database saved");
-    void frontend.stop();
-    if (config.uiMode === "telegram" || config.uiMode === "html") {
-      releaseBotLock();
-    }
-    process.exit(0);
+    void (async () => {
+      console.log("\n👋 Shutting down P2 Claw...");
+      if (process.env.npm_lifecycle_event === "dev") {
+        console.log(
+          "   Under `npm run dev`, tsx may restart this process. Press Ctrl+C in the terminal to stop the watcher."
+        );
+      }
+      stopHealthPing();
+      const drained = drainPendingChallenges();
+      if (drained > 0) {
+        console.log(
+          `   ✓ Drained ${drained} pending TOTP challenge${drained === 1 ? "" : "s"} (audit records written)`
+        );
+      }
+      try {
+        await stopAllMcpHosts();
+        console.log("   ✓ MCP servers stopped");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`   ⚠️  Failed to stop MCP servers cleanly: ${message}`);
+      }
+      closeDatabase();
+      console.log("   ✓ Database saved");
+      try {
+        await frontend.stop();
+      } catch {
+        // best effort; proceed with process exit
+      }
+      if (config.uiMode === "telegram" || config.uiMode === "html") {
+        releaseBotLock();
+      }
+      process.exit(0);
+    })();
   };
   registerGracefulShutdown(shutdown);
   process.on("SIGINT", shutdown);

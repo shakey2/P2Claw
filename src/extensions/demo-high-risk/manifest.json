@@ -2,7 +2,7 @@
   "id": "com.p2claw.demo-high-risk",
   "name": "Demo High Risk",
   "version": "0.1.0",
-  "description": "First-party demo module that declares the high-risk shell.execute permission. Phase 1 keeps the underlying shell primitive stubbed — this module exists to prove the TOTP gate + audit log end-to-end, not to actually run shell commands.",
+  "description": "First-party demo module that declares high-risk shell.execute. Use it to verify real Core-mediated subprocess execution with TOTP + audit.",
   "runtime": "inprocess",
   "firstParty": true,
   "entry": "index.js",
@@ -10,13 +10,13 @@
   "tools": [
     {
       "name": "demo_shell",
-      "description": "Pretends to run a shell command. Calls the broker's shell.execute, which is stubbed in Phase 1 — use this to verify the TOTP approval flow and audit log without running a real shell command.",
+      "description": "Runs a shell command through the broker's shell.execute path with TOTP approval and audit logging.",
       "parameters": {
         "type": "object",
         "properties": {
           "cmd": {
             "type": "string",
-            "description": "The command name (demo only; not actually executed)."
+            "description": "The command name to execute."
           },
           "args": {
             "type": "array",

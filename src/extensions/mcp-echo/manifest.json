@@ -1,0 +1,58 @@
+{
+  "id": "com.p2claw.mcp-echo",
+  "name": "MCP Echo Fixture",
+  "version": "0.1.0",
+  "description": "In-tree MCP stdio fixture for verify-modules. Exposes echo tools for safe and high-risk registry-gate coverage.",
+  "runtime": "mcp",
+  "firstParty": true,
+  "permissions": ["log.info", "shell.execute"],
+  "mcp": {
+    "command": "node",
+    "args": ["echo-server.js"],
+    "startupTimeoutMs": 8000,
+    "restartOnCrash": true
+  },
+  "tools": [
+    {
+      "name": "mcp_echo",
+      "description": "Echoes structured input through MCP for Level 4 bridge verification.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Optional message to echo."
+          },
+          "payload": {
+            "type": "object",
+            "description": "Optional structured payload.",
+            "additionalProperties": true
+          }
+        },
+        "required": []
+      },
+      "requires": ["log.info"]
+    },
+    {
+      "name": "mcp_echo_high_risk",
+      "description": "Same as mcp_echo but marked high-risk to verify TOTP approval is enforced before MCP call dispatch.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Optional message to echo."
+          },
+          "payload": {
+            "type": "object",
+            "description": "Optional structured payload.",
+            "additionalProperties": true
+          }
+        },
+        "required": []
+      },
+      "requires": ["shell.execute"]
+    }
+  ]
+}
+

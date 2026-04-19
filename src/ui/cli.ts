@@ -9,39 +9,33 @@ import readline from "readline";
 import type { Config } from "../config.js";
 import type { Frontend } from "./frontend.js";
 import { createAgentCore } from "./core.js";
-import { clearHistory, compactHistory } from "../agent.js";
+import {
+  clearHistory,
+  compactHistory,
+  getHistoryLength,
+  setActiveProfile,
+  getActiveProfile,
+} from "../agent.js";
+import { checkHealth, getJoules, listProfiles } from "../player2.js";
+import { getToolCount } from "../tools/registry.js";
 import { getMemoryCount, listMemories } from "../memory/index.js";
 import {
   tryApprovePendingForChat,
   cancelPendingForChat,
+  hasPendingApprovalForChat,
 } from "../security/approval.js";
 import { requestGracefulShutdown } from "../graceful-shutdown.js";
-import { handleDebugCommand, type DebugResult } from "./debug.js";
+import {
+  handleDebugCommand,
+  parseDebugTail,
+  type DebugResult,
+} from "./debug.js";
 
 /** Conversation history key for CLI (separate from persisted memory scope). */
 const CLI_SESSION_ID = 1;
 
 function ask(rl: readline.Interface, prompt: string): Promise<string> {
   return new Promise((resolve) => rl.question(prompt, resolve));
-}
-
-/**
- * Splits a `/debug ...` line into subcommand + verbatim rest without
- * tokenising the tail. This matters because `/debug call <tool> <json>`
- * embeds JSON that may contain whitespace / quotes / braces.
- */
-function parseDebugLine(
-  line: string
-): { subcommand: string; rest: string } {
-  const trimmed = line.trim();
-  const afterCmd = trimmed.replace(/^\/debug\b/, "").trimStart();
-  if (!afterCmd) return { subcommand: "", rest: "" };
-  const m = afterCmd.match(/^(\S+)(\s+([\s\S]*))?$/);
-  if (!m) return { subcommand: afterCmd, rest: "" };
-  return {
-    subcommand: m[1] ?? "",
-    rest: (m[3] ?? "").trim(),
-  };
 }
 
 /**
@@ -130,6 +124,58 @@ async function readStdinAll(): Promise<string> {
   });
 }
 
+/**
+ * Shared high-risk approval UX: print Core prompt, then loop on readline until
+ * approved, cancelled, TTL expiry, or supersede. Bad TOTP codes are non-terminal
+ * (challenge stays pending) — same semantics as Telegram middleware.
+ */
+function buildCliApprovalHook(
+  rl: readline.Interface,
+  sessionId: number,
+  totpSecretBase32: string | undefined,
+  isInteractive: boolean
+): (promptText: string) => Promise<void> {
+  return async (promptText: string) => {
+    console.log(`\n${promptText}\n`);
+    const secret = totpSecretBase32?.trim();
+    if (!secret) {
+      console.log(
+        "TOTP is not configured. Set TOTP_SECRET_BASE32 in .env and restart."
+      );
+      return;
+    }
+    if (!isInteractive) {
+      console.log(
+        "Approval required, but CLI is non-interactive. " +
+          "The pending action will time out. Re-run in a TTY to approve."
+      );
+      return;
+    }
+    while (hasPendingApprovalForChat(sessionId)) {
+      const raw = await ask(rl, "Enter 6-digit code or CANCEL to abort: ");
+      if (/^cancel$/i.test(raw.trim())) {
+        const r = cancelPendingForChat(sessionId);
+        console.log(r.ok ? "Cancelled." : `Could not cancel: ${r.message}`);
+        return;
+      }
+      const code = normalizeCode(raw);
+      if (!/^\d{6}$/.test(code)) {
+        console.log("Expected a 6-digit code or CANCEL. Try again.");
+        continue;
+      }
+      const result = tryApprovePendingForChat(sessionId, code, secret);
+      if (result.ok) {
+        console.log("Approved.");
+        return;
+      }
+      console.log(
+        `Not approved: ${result.message} Try again or type CANCEL.`
+      );
+    }
+    console.log("Challenge expired or was superseded.");
+  };
+}
+
 export function createCliFrontend(config: Config): Frontend {
   const core = createAgentCore(config);
   const isInteractive = !!process.stdin.isTTY && !!process.stdout.isTTY;
@@ -144,6 +190,12 @@ export function createCliFrontend(config: Config): Frontend {
 
   let running = false;
   let chain: Promise<void> = Promise.resolve();
+  const sendPendingApproval = buildCliApprovalHook(
+    rl,
+    CLI_SESSION_ID,
+    config.totpSecretBase32,
+    isInteractive
+  );
 
   async function handleSlashCommand(line: string): Promise<boolean> {
     const [cmd, ...rest] = line.trim().split(/\s+/);
@@ -158,7 +210,9 @@ export function createCliFrontend(config: Config): Frontend {
         console.log(`Unknown command: ${cmd}`);
         return true;
       }
-      const { subcommand, rest: debugRest } = parseDebugLine(line);
+      const { subcommand, rest: debugRest } = parseDebugTail(
+        line.trim().replace(/^\/debug\b/, "").trimStart()
+      );
       const result = await handleDebugCommand({
         devMode: true,
         sessionId: CLI_SESSION_ID,
@@ -167,37 +221,7 @@ export function createCliFrontend(config: Config): Frontend {
         uiMode: "cli",
         totpSecretBase32: config.totpSecretBase32,
         memoryScopeId: config.memoryScopeId,
-        sendPendingApproval: async (promptText: string) => {
-          console.log(`\n${promptText}\n`);
-          const secret = config.totpSecretBase32?.trim();
-          if (!secret) {
-            console.log(
-              "TOTP is not configured. Set TOTP_SECRET_BASE32 in .env and restart."
-            );
-            return;
-          }
-          if (!isInteractive) {
-            console.log(
-              "Approval required, but CLI is non-interactive. Re-run in an interactive terminal."
-            );
-            return;
-          }
-          const raw = await ask(rl, "Enter 6-digit code or type CANCEL to abort: ");
-          if (/^cancel$/i.test(raw.trim())) {
-            const r = cancelPendingForChat(CLI_SESSION_ID);
-            console.log(r.ok ? "Cancelled." : `Could not cancel: ${r.message}`);
-            return;
-          }
-          const code = normalizeCode(raw);
-          if (!/^\d{6}$/.test(code)) {
-            console.log("Not a 6-digit code.");
-            return;
-          }
-          const approvalResult = tryApprovePendingForChat(CLI_SESSION_ID, code, secret);
-          console.log(
-            approvalResult.ok ? "Approved." : `Not approved: ${approvalResult.message}`
-          );
-        },
+        sendPendingApproval,
       });
       const text = renderDebugForCli(result);
       if (text) console.log(text);
@@ -250,17 +274,116 @@ export function createCliFrontend(config: Config): Frontend {
         console.log(config.totpSecretBase32?.trim() ? "TOTP: configured." : "TOTP: not configured.");
         return true;
       }
+      case "/totp_enroll_help": {
+        console.log(
+          [
+            "TOTP (RFC 6238) for high-risk tools (Google Authenticator, Aegis, etc.):",
+            "",
+            "1. Generate a random Base32 secret (20+ bytes of entropy).",
+            "2. In your authenticator app, add a manual key with that secret.",
+            "3. Put the same value in .env as TOTP_SECRET_BASE32= (no quotes).",
+            "4. Restart the bot. Check with /totp_status.",
+            "",
+            "When a high-risk tool runs, reply with only the 6-digit code, or:",
+            "APPROVE <challengeId> <6-digit-code>",
+            "",
+            "To abort without approving, reply:",
+            "CANCEL",
+          ].join("\n")
+        );
+        return true;
+      }
+      case "/status": {
+        const lines: string[] = ["P2 Claw status:\n"];
+        try {
+          const health = await checkHealth();
+          lines.push(`Player2 App: Online (v${health.client_version})`);
+        } catch {
+          lines.push("Player2 App: Offline or unreachable");
+        }
+        try {
+          const joules = await getJoules();
+          lines.push(`Joules: ${joules.joules.toLocaleString()}`);
+          lines.push(`Patron: ${joules.patron_tier || "None"}`);
+        } catch {
+          lines.push("Joules: Unable to fetch");
+        }
+        const activeProfile = getActiveProfile();
+        lines.push("");
+        lines.push(`Active profile: ${activeProfile || "Default"}`);
+        lines.push(`Tools loaded: ${getToolCount()}`);
+        lines.push(
+          `Conversation history: ${getHistoryLength(CLI_SESSION_ID)} messages`
+        );
+        console.log(lines.join("\n"));
+        return true;
+      }
+      case "/profile": {
+        if (!config.useProfiles) {
+          console.log(
+            "Profile switching is disabled.\n\n" +
+              "To enable it, set USE_PROFILES=true in your .env file.\n" +
+              "This is a Player2 Patron feature."
+          );
+          return true;
+        }
+        if (args) {
+          try {
+            const profiles = await listProfiles();
+            const found = profiles.find(
+              (p) => p.name.toLowerCase() === args.toLowerCase()
+            );
+            if (found) {
+              setActiveProfile(found.name);
+              console.log(
+                `Switched to profile: ${found.name}\nBase URL: ${found.base_url}`
+              );
+            } else {
+              const available = profiles.map((p) => `  - ${p.name}`).join("\n");
+              console.log(
+                `Profile "${args}" not found.\n\nAvailable profiles:\n${available}`
+              );
+            }
+          } catch {
+            console.log("Failed to fetch profiles from Player2.");
+          }
+          return true;
+        }
+        try {
+          const profiles = await listProfiles();
+          if (profiles.length === 0) {
+            console.log(
+              "No profiles configured.\n" +
+                "Create profiles in the Player2 App settings."
+            );
+            return true;
+          }
+          const active = getActiveProfile();
+          const profileList = profiles
+            .map((p) => `  - ${p.name}${p.name === active ? "  (active)" : ""}`)
+            .join("\n");
+          console.log(
+            `AI Profiles:\n\n${profileList}\n\nTo switch: /profile <name>\nCurrent: ${active || "Default"}`
+          );
+        } catch {
+          console.log("Failed to fetch profiles from Player2.");
+        }
+        return true;
+      }
       case "/help": {
         const lines = [
           "Commands:",
-          "  /help         Show this help",
-          "  /memories     List recent memories",
-          "  /compact      Summarize older conversation history",
-          "  /clear        Clear conversation history (memories unaffected)",
-          "  /cancel       Abort a pending TOTP approval request",
-          "  /totp_status  Whether TOTP is configured",
-          "  /shutdown     Graceful shutdown",
-          "  /exit         Quit CLI",
+          "  /help              Show this help",
+          "  /status            Check Player2 health, joules, profile, tools",
+          "  /profile [name]    List or switch AI profiles (USE_PROFILES=true)",
+          "  /memories          List recent memories",
+          "  /compact           Summarize older conversation history",
+          "  /clear             Clear conversation history (memories unaffected)",
+          "  /cancel            Abort a pending TOTP approval request",
+          "  /totp_status       Whether TOTP is configured",
+          "  /totp_enroll_help  Set up Google Authenticator for high-risk tools",
+          "  /shutdown          Graceful shutdown",
+          "  /exit              Quit CLI",
         ];
         if (config.devMode) {
           lines.push(
@@ -287,31 +410,7 @@ export function createCliFrontend(config: Config): Frontend {
       const argMsg = getArgMessage();
       if (argMsg) {
         const response = await core.process(CLI_SESSION_ID, argMsg, {
-          sendPendingApproval: async (promptText: string) => {
-            console.log(`\n${promptText}\n`);
-            const secret = config.totpSecretBase32?.trim();
-            if (!secret) {
-              console.log("TOTP is not configured. Set TOTP_SECRET_BASE32 in .env and restart.");
-              return;
-            }
-            if (!isInteractive) {
-              console.log("Approval required, but CLI is non-interactive. Re-run in an interactive terminal.");
-              return;
-            }
-            const raw = await ask(rl, "Enter 6-digit code or type CANCEL to abort: ");
-            if (/^cancel$/i.test(raw.trim())) {
-              const r = cancelPendingForChat(CLI_SESSION_ID);
-              console.log(r.ok ? "Cancelled." : `Could not cancel: ${r.message}`);
-              return;
-            }
-            const code = normalizeCode(raw);
-            if (!/^\d{6}$/.test(code)) {
-              console.log("Not a 6-digit code.");
-              return;
-            }
-            const result = tryApprovePendingForChat(CLI_SESSION_ID, code, secret);
-            console.log(result.ok ? "Approved." : `Not approved: ${result.message}`);
-          },
+          sendPendingApproval,
         });
         process.stdout.write(`${response}\n`);
         requestGracefulShutdown();
@@ -334,11 +433,7 @@ export function createCliFrontend(config: Config): Frontend {
         }
 
         const response = await core.process(CLI_SESSION_ID, msg, {
-          sendPendingApproval: async (promptText: string) => {
-            // Non-interactive cannot safely prompt for TOTP.
-            console.log(promptText);
-            console.log("Approval required, but CLI is non-interactive. Re-run in an interactive terminal.");
-          },
+          sendPendingApproval,
         });
         process.stdout.write(`${response}\n`);
         requestGracefulShutdown();
@@ -364,27 +459,7 @@ export function createCliFrontend(config: Config): Frontend {
           }
 
           const response = await core.process(CLI_SESSION_ID, text, {
-            sendPendingApproval: async (promptText: string) => {
-              console.log(`\n${promptText}\n`);
-              const secret = config.totpSecretBase32?.trim();
-              if (!secret) {
-                console.log("TOTP is not configured. Set TOTP_SECRET_BASE32 in .env and restart.");
-                return;
-              }
-              const raw = await ask(rl, "Enter 6-digit code or type CANCEL to abort: ");
-              if (/^cancel$/i.test(raw.trim())) {
-                const r = cancelPendingForChat(CLI_SESSION_ID);
-                console.log(r.ok ? "Cancelled." : `Could not cancel: ${r.message}`);
-                return;
-              }
-              const code = normalizeCode(raw);
-              if (!/^\d{6}$/.test(code)) {
-                console.log("Not a 6-digit code.");
-                return;
-              }
-              const result = tryApprovePendingForChat(CLI_SESSION_ID, code, secret);
-              console.log(result.ok ? "Approved." : `Not approved: ${result.message}`);
-            },
+            sendPendingApproval,
           });
 
           console.log(`\n${response}\n`);

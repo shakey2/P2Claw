@@ -29,6 +29,10 @@ export interface Challenge {
   status: ChallengeStatus;
 }
 
+interface CreateChallengeOptions {
+  summaryOverride?: string;
+}
+
 const challenges = new Map<string, Challenge>();
 
 type Waiter = {
@@ -117,6 +121,39 @@ function canonicalArgsJson(args: Record<string, unknown>): string {
   return JSON.stringify(obj);
 }
 
+function redactSummaryValue(key: string, value: unknown): string {
+  const SENSITIVE =
+    /(token|secret|password|api[_-]?key|credential|authorization|bearer|cookie|session)/i;
+  if (SENSITIVE.test(key)) return "[REDACTED]";
+  if (typeof value === "string") {
+    if (SENSITIVE.test(value)) return "[REDACTED]";
+    return value.length > 80 ? `${value.slice(0, 77)}...` : value;
+  }
+  if (Array.isArray(value)) {
+    const preview = value
+      .slice(0, 5)
+      .map((item) => (typeof item === "string" ? redactSummaryValue(key, item) : String(item)))
+      .join(", ");
+    return `[${preview}${value.length > 5 ? ", ..." : ""}]`;
+  }
+  try {
+    const s = JSON.stringify(value);
+    return s.length > 80 ? `${s.slice(0, 77)}...` : s;
+  } catch {
+    return "[unserialisable]";
+  }
+}
+
+function summariseArgsForApproval(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const key of Object.keys(args).sort()) {
+    parts.push(`${key}=${redactSummaryValue(key, args[key])}`);
+    if (parts.join(" ").length > 280) break;
+  }
+  const joined = parts.join(" ");
+  return joined.length > 280 ? `${joined.slice(0, 279)}...` : joined;
+}
+
 export function hashPayload(args: Record<string, unknown>): string {
   return createHash("sha256").update(canonicalArgsJson(args), "utf8").digest("hex");
 }
@@ -131,7 +168,8 @@ function makeChallengeId(): string {
 export function createChallenge(
   chatId: number,
   toolName: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  options?: CreateChallengeOptions
 ): { challengeId: string; summary: string; payloadHash: string } {
   expirePendingChallengesForChat(chatId);
 
@@ -141,9 +179,12 @@ export function createChallenge(
   }
 
   const payloadHash = hashPayload(args);
-  const canon = canonicalArgsJson(args);
+  const fallbackSummary = summariseArgsForApproval(args);
   const summary =
-    canon.length > 280 ? `${canon.slice(0, 280)}…` : canon;
+    typeof options?.summaryOverride === "string" &&
+    options.summaryOverride.trim().length > 0
+      ? options.summaryOverride.trim().slice(0, 280)
+      : fallbackSummary;
 
   challenges.set(challengeId, {
     chatId,

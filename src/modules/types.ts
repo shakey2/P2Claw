@@ -5,11 +5,15 @@
 import type OpenAI from "openai";
 import type { PermissionId } from "./permissions.js";
 
-/** Result of running a stubbed shell / process invocation. */
+/** Result of running a shell / process invocation. */
 export interface ProcessResult {
   stdout: string;
   stderr: string;
   code: number;
+  signal?: string;
+  timedOut: boolean;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
 }
 
 /**

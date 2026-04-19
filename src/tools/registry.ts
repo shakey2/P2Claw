@@ -21,6 +21,15 @@ import {
 import type { ToolDefinition, ExecuteToolOptions, ToolRisk } from "./tool-types.js";
 import { maxRisk, type PermissionId } from "../modules/permissions.js";
 import { runWithGrants } from "../modules/broker.js";
+import {
+  buildSubprocessApprovalSummary,
+  DEFAULT_SUBPROCESS_OUTPUT_CAP_BYTES,
+  DEFAULT_SUBPROCESS_TIMEOUT_MS,
+} from "../modules/subprocess.js";
+import {
+  buildFsApprovalSummary,
+  checkWorkspaceSandbox,
+} from "../modules/fs-policy.js";
 
 export type { ToolDefinition, ToolRisk, ExecuteToolOptions } from "./tool-types.js";
 
@@ -45,6 +54,9 @@ import remember from "./remember.js";
 import recall from "./recall.js";
 import forget from "./forget.js";
 import highRiskDemo from "./high-risk-demo.js";
+import fileRead from "./file-read.js";
+import fileWrite from "./file-write.js";
+import fileList from "./file-list.js";
 
 // ── Registry ────────────────────────────────────────────────────
 const tools: Map<string, ToolDefinition> = new Map();
@@ -63,6 +75,9 @@ register(remember);
 register(recall);
 register(forget);
 register(highRiskDemo);
+register(fileRead);
+register(fileWrite);
+register(fileList);
 
 /**
  * Register a module-contributed tool. The loader calls this with
@@ -205,6 +220,7 @@ export async function executeTool(
   }
 
   const risk: ToolRisk = computeEffectiveRisk(tool);
+  const requires = tool.requiredPermissions ?? [];
 
   if (risk === "high") {
     const secret = opts.totpSecretBase32?.trim();
@@ -226,7 +242,38 @@ export async function executeTool(
       });
     }
 
-    const { challengeId, summary } = createChallenge(opts.chatId, name, args);
+    let summaryOverride: string | undefined;
+    if (requires.includes("shell.execute")) {
+      summaryOverride = buildSubprocessApprovalSummary("shell.execute", args, {
+        timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+        stdoutCapBytes: DEFAULT_SUBPROCESS_OUTPUT_CAP_BYTES,
+        stderrCapBytes: DEFAULT_SUBPROCESS_OUTPUT_CAP_BYTES,
+      });
+    } else if (requires.includes("process.spawn")) {
+      summaryOverride = buildSubprocessApprovalSummary("process.spawn", args, {
+        timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+        stdoutCapBytes: DEFAULT_SUBPROCESS_OUTPUT_CAP_BYTES,
+        stderrCapBytes: DEFAULT_SUBPROCESS_OUTPUT_CAP_BYTES,
+      });
+    } else if (name === "file_write") {
+      const relPath = typeof args.rel_path === "string" ? args.rel_path : "";
+      const content =
+        typeof args.content === "string" ? args.content : JSON.stringify(args.content ?? "");
+      try {
+        const absPath = checkWorkspaceSandbox(relPath);
+        summaryOverride = buildFsApprovalSummary(
+          "write",
+          absPath,
+          Buffer.byteLength(content, "utf-8")
+        );
+      } catch {
+        summaryOverride = `Write file in workspace (path rejected: ${relPath || "(missing)"})`;
+      }
+    }
+
+    const { challengeId, summary } = createChallenge(opts.chatId, name, args, {
+      summaryOverride,
+    });
 
     const prompt =
       `High-risk action: ${name}\n` +

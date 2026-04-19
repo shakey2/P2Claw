@@ -61,6 +61,7 @@ In CLI mode, type `/help` for commands.
 
 - Windows “double-click to use”: run `start.bat` in the repo root (starts P2 Claw and opens `http://127.0.0.1:3847/`).
 - Chat is at `/` and config is at `/config`.
+- High-risk tools open an **approval** panel on the chat page: enter your 6-digit TOTP and submit, or **Cancel**. Wrong codes show an error and you can retry until the challenge times out (120s).
 
 You can also launch CLI directly on Windows:
 
@@ -99,7 +100,7 @@ That's it. The Player2 API connection is built in — just make sure the Player2
 - **No public web server** — Telegram uses long-polling by default, and the optional HTML UI binds to loopback only (`127.0.0.1` / `::1`). Nothing is exposed to the LAN or internet by default.
 - **Secrets in .env only** — Your Telegram token never appears in code or logs.
 - **Local-first** — Everything runs on your machine. Messages are processed locally via Player2.
-- **Level 4 Phase 1 — TOTP approvals** — High-risk tools (demo: `high_risk_demo`) ask for your authenticator code. While a challenge is open, send **only the 6-digit code** in Telegram (or `APPROVE <8-char-id> <code>`). Those messages are handled **before** the AI sees them, so they are not added to model context or chat history. Set `TOTP_SECRET_BASE32` in `.env` (see `.env.example`). See [`.agent/workflows/security-considerations.md`](.agent/workflows/security-considerations.md) for why permission boundaries stay in the bot, not the LLM.
+- **Level 4 Phase 1 — TOTP approvals** — High-risk tools (demo: `high_risk_demo`) ask for your authenticator code. **Telegram:** while a challenge is open, send **only the 6-digit code** (or `APPROVE <8-char-id> <code>`); those messages are handled **before** the AI sees them. **CLI and HTML:** same TOTP code-entry flow — the CLI prompts in the terminal; the loopback HTML UI shows an approval panel and posts codes to a separate `/api/approve` endpoint (not chat). Codes and approval prompts are never added to model context or chat history in any frontend. Set `TOTP_SECRET_BASE32` in `.env` (see `.env.example`). See [`.agent/workflows/security-considerations.md`](.agent/workflows/security-considerations.md) for why permission boundaries stay in the bot, not the LLM.
 - **Never paste your Base32 secret into Telegram** — only the six-digit rotating code when the bot is waiting for approval.
 - **No raw model output logging by default** — set `P2CLAW_LOG_RAW_MODEL=true` in `.env` to print a short raw response preview for debugging.
 
@@ -130,9 +131,12 @@ When `UI_MODE=cli`, you can use:
 | `/memories` | List recent memories |
 | `/compact` | Summarize older conversation history |
 | `/clear` | Clear conversation history (memories unaffected) |
+| `/cancel` | Abort a pending TOTP approval request |
 | `/totp_status` | Whether `TOTP_SECRET_BASE32` is set |
 | `/shutdown` | Graceful shutdown |
 | `/exit` | Quit CLI |
+
+When a high-risk tool runs, the CLI prints the approval summary and prompts for a **6-digit authenticator code** in the terminal (or type `CANCEL` at that prompt to abort). Wrong codes are non-fatal — you can retry within the **120-second** window until the challenge expires or is cancelled.
 
 ### CLI one-shot mode (works without TTY)
 
@@ -233,7 +237,7 @@ scripts/
 
 ### Embedding the Player2 Game Key
 
-End users should never need to deal with the game key. Before distributing, you must embed your real key:
+End users should never need to deal with the game key. If for some reason you don't want to use my dev key, and do not intend to publish your own distribution with your own dev key. You must embed your dev key as follows to continue using player2 as the model service provider:
 
 1. **Get your Game Client ID** from the [Player2 Developer Dashboard](https://player2.game/profile/developer)
 

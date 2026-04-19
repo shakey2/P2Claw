@@ -6,8 +6,10 @@
  * strict: any unexpected field shape or any permission/runtime outside the
  * Core-owned allowlist rejects the entire manifest.
  *
- * Phase 1 rules:
- *   - runtime MUST be "inprocess". "mcp" is rejected as not-yet-implemented.
+ * Runtime rules:
+ *   - runtime "inprocess": entry must resolve to a file in the module folder.
+ *   - runtime "mcp": module must provide an `mcp` launch block. `entry` is
+ *     optional/ignored because Core does not import module code in-process.
  *   - firstParty MUST be `true` AND the module's folder name must be a key in
  *     `FIRST_PARTY_ALLOWLIST` AND `manifest.id` must equal the value that
  *     folder is bound to. This folder->id binding prevents a "rename a
@@ -34,6 +36,14 @@ import {
 
 export type ModuleRuntime = "inprocess" | "mcp";
 
+export interface McpConfig {
+  command: string;
+  args: readonly string[];
+  env?: Readonly<Record<string, string>>;
+  startupTimeoutMs?: number;
+  restartOnCrash?: boolean;
+}
+
 export interface ManifestTool {
   name: string;
   description: string;
@@ -47,6 +57,7 @@ export interface ModuleManifest {
   version: string;
   description: string;
   runtime: ModuleRuntime;
+  mcp?: McpConfig;
   firstParty: boolean;
   entry: string;
   permissions: readonly PermissionId[];
@@ -70,12 +81,20 @@ export const FIRST_PARTY_ALLOWLIST: Readonly<Record<string, string>> = {
   // P2CLAW_DEV_MODE=true. The allowlist entry stays unconditional so the
   // folder->id binding still holds if dev mode is ever toggled on.
   "dev-tools": "com.p2claw.dev-tools",
+  // In-tree MCP fixture used by scripts/verify-modules.ts. Loader skips this
+  // folder unless loadModules(..., { mcpVerify: true }) is set.
+  "mcp-echo": "com.p2claw.mcp-echo",
 };
 
 const ID_REGEX = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*){1,4}$/;
 const TOOL_NAME_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/;
 const SEMVER_REGEX =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const UNSAFE_MCP_COMMAND_CHARS = /[|&;$`]/;
+const SECRET_ENV_NAME =
+  /^(?:TELEGRAM_BOT_TOKEN|TOTP_SECRET_BASE32|PLAYER2_GAME_KEY)$/i;
+const SECRET_ENV_REF =
+  /\$\{?(?:TELEGRAM_BOT_TOKEN|TOTP_SECRET_BASE32|PLAYER2_GAME_KEY)\}?/i;
 
 export class ManifestValidationError extends Error {
   public readonly code: string;
@@ -141,13 +160,7 @@ export function validateManifest(
   if (runtime !== "inprocess" && runtime !== "mcp") {
     fail(
       "ERR_MANIFEST_RUNTIME",
-      `manifest.runtime must be "inprocess" (mcp is planned for Phase 2)`
-    );
-  }
-  if (runtime === "mcp") {
-    fail(
-      "ERR_MCP_NOT_IMPLEMENTED_PHASE1",
-      `runtime "mcp" is not implemented in Phase 1; use "inprocess" for first-party modules`
+      `manifest.runtime must be "inprocess" or "mcp"`
     );
   }
 
@@ -176,20 +189,116 @@ export function validateManifest(
     );
   }
 
-  const entry = requireString(raw, "entry");
-  if (isAbsolute(entry) || entry.includes("..")) {
-    fail(
-      "ERR_MANIFEST_ENTRY",
-      `manifest.entry "${entry}" must be a relative path inside the module folder`
-    );
-  }
-  const resolvedEntry = normalize(join(folderPath, entry));
-  const rel = relative(folderPath, resolvedEntry);
-  if (rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..")) {
-    fail(
-      "ERR_MANIFEST_ENTRY",
-      `manifest.entry "${entry}" escapes the module folder`
-    );
+  let entry = "";
+  let mcp: McpConfig | undefined;
+  if (runtime === "inprocess") {
+    if (raw.mcp !== undefined) {
+      fail(
+        "ERR_MANIFEST_MCP_UNEXPECTED",
+        `manifest.mcp is only valid when runtime is "mcp"`
+      );
+    }
+    entry = requireString(raw, "entry");
+    if (isAbsolute(entry) || entry.includes("..")) {
+      fail(
+        "ERR_MANIFEST_ENTRY",
+        `manifest.entry "${entry}" must be a relative path inside the module folder`
+      );
+    }
+    const resolvedEntry = normalize(join(folderPath, entry));
+    const rel = relative(folderPath, resolvedEntry);
+    if (rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..")) {
+      fail(
+        "ERR_MANIFEST_ENTRY",
+        `manifest.entry "${entry}" escapes the module folder`
+      );
+    }
+  } else {
+    if (!isObject(raw.mcp)) {
+      fail(
+        "ERR_MCP_CONFIG_MISSING",
+        `manifest.mcp must be an object when runtime is "mcp"`
+      );
+    }
+    const mcpRaw = raw.mcp;
+    const command = requireString(mcpRaw, "command");
+    if (UNSAFE_MCP_COMMAND_CHARS.test(command)) {
+      fail(
+        "ERR_MCP_COMMAND_UNSAFE",
+        `manifest.mcp.command "${command}" contains shell metacharacters`
+      );
+    }
+
+    const rawArgs = mcpRaw.args;
+    if (!Array.isArray(rawArgs)) {
+      fail("ERR_MCP_ARGS_INVALID", "manifest.mcp.args must be an array of strings");
+    }
+    const args: string[] = [];
+    for (const arg of rawArgs) {
+      if (typeof arg !== "string") {
+        fail("ERR_MCP_ARGS_INVALID", "manifest.mcp.args entries must be strings");
+      }
+      args.push(arg);
+    }
+
+    let env: Record<string, string> | undefined;
+    if (mcpRaw.env !== undefined) {
+      if (!isObject(mcpRaw.env)) {
+        fail("ERR_MCP_ENV_INVALID", "manifest.mcp.env must be an object of string pairs");
+      }
+      env = {};
+      for (const [k, v] of Object.entries(mcpRaw.env)) {
+        if (typeof v !== "string") {
+          fail("ERR_MCP_ENV_INVALID", `manifest.mcp.env["${k}"] must be a string`);
+        }
+        if (SECRET_ENV_NAME.test(k) || SECRET_ENV_REF.test(v)) {
+          fail(
+            "ERR_MCP_ENV_INVALID",
+            `manifest.mcp.env["${k}"] references a Core secret; pass-through is not allowed`
+          );
+        }
+        env[k] = v;
+      }
+    }
+
+    const startupTimeoutMsRaw = mcpRaw.startupTimeoutMs;
+    let startupTimeoutMs: number | undefined;
+    if (startupTimeoutMsRaw !== undefined) {
+      if (
+        typeof startupTimeoutMsRaw !== "number" ||
+        !Number.isFinite(startupTimeoutMsRaw) ||
+        startupTimeoutMsRaw < 1
+      ) {
+        fail(
+          "ERR_MCP_TIMEOUT_INVALID",
+          "manifest.mcp.startupTimeoutMs must be a positive number"
+        );
+      }
+      startupTimeoutMs = Math.floor(startupTimeoutMsRaw);
+    }
+
+    const restartOnCrashRaw = mcpRaw.restartOnCrash;
+    let restartOnCrash: boolean | undefined;
+    if (restartOnCrashRaw !== undefined) {
+      if (typeof restartOnCrashRaw !== "boolean") {
+        fail(
+          "ERR_MCP_RESTART_INVALID",
+          "manifest.mcp.restartOnCrash must be a boolean when provided"
+        );
+      }
+      restartOnCrash = restartOnCrashRaw;
+    }
+
+    mcp = {
+      command,
+      args,
+      env,
+      startupTimeoutMs,
+      restartOnCrash,
+    };
+    if (typeof raw.entry === "string") {
+      entry = raw.entry;
+    }
   }
 
   if (!Array.isArray(raw.permissions)) {
@@ -293,6 +402,7 @@ export function validateManifest(
     version,
     description,
     runtime,
+    mcp,
     firstParty: true,
     entry,
     permissions: Array.from(permSet) as PermissionId[],

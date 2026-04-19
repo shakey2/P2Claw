@@ -23,6 +23,7 @@ import {
 } from "fs";
 import { createHash } from "crypto";
 import { dirname, join } from "path";
+import type { McpEventEntry, McpLifecycleEntry } from "../mcp/types.js";
 
 const DEFAULT_LOG_PATH = join(process.cwd(), "data", "p2claw.audit.log");
 const MAX_AUDIT_SIZE_BYTES = 5 * 1024 * 1024;
@@ -243,6 +244,144 @@ export interface DebugInvocationEntry {
  * throws. Use `hashArgs` / `summariseArgs` to populate argsHash / argsSummary.
  */
 export function writeDebugInvocation(entry: DebugInvocationEntry): void {
+  const path = resolveAuditLogPath();
+  try {
+    const dir = dirname(path);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    rotateIfNeeded(path);
+    const line =
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        ...entry,
+      }) + "\n";
+    appendFileSync(path, line, "utf-8");
+  } catch {
+    /* never crash on audit failure */
+  }
+}
+
+// ── Subprocess execution events ─────────────────────────────────
+//
+// Permission decisions answer "was the primitive allowed?". For real shell and
+// process execution we also log a narrow post-dispatch result record so
+// operators can tell whether execution completed, timed out, or failed.
+
+export type SubprocessOutcome =
+  | "success"
+  | "nonzero_exit"
+  | "timeout"
+  | "spawn_error";
+
+export interface SubprocessEventEntry {
+  kind: "subprocess_event";
+  moduleId: string;
+  permission: "shell.execute" | "process.spawn";
+  toolName?: string;
+  outcome: SubprocessOutcome;
+  commandHash: string;
+  commandSummary: string;
+  code: number;
+  signal?: string;
+  timedOut: boolean;
+  stdoutBytes: number;
+  stderrBytes: number;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+}
+
+export function writeSubprocessEvent(entry: SubprocessEventEntry): void {
+  const path = resolveAuditLogPath();
+  try {
+    const dir = dirname(path);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    rotateIfNeeded(path);
+    const line =
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        ...entry,
+      }) + "\n";
+    appendFileSync(path, line, "utf-8");
+  } catch {
+    /* never crash on audit failure */
+  }
+}
+
+// ── MCP bridge runtime events ───────────────────────────────────
+//
+// `mcp_lifecycle` answers process-level questions (started/crashed/restarted).
+// `mcp_event` answers per-tool-call outcomes (success/timeout/disconnected...).
+
+export function writeMcpEvent(entry: McpEventEntry): void {
+  const path = resolveAuditLogPath();
+  try {
+    const dir = dirname(path);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    rotateIfNeeded(path);
+    const line =
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        ...entry,
+      }) + "\n";
+    appendFileSync(path, line, "utf-8");
+  } catch {
+    /* never crash on audit failure */
+  }
+}
+
+export function writeMcpLifecycle(entry: McpLifecycleEntry): void {
+  const path = resolveAuditLogPath();
+  try {
+    const dir = dirname(path);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    rotateIfNeeded(path);
+    const line =
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        ...entry,
+      }) + "\n";
+    appendFileSync(path, line, "utf-8");
+  } catch {
+    /* never crash on audit failure */
+  }
+}
+
+// -- File-system operation events ---------------------------------
+//
+// Permission decisions answer "was the permission allowed?". Real file
+// operations also need a narrow post-dispatch record so operators can audit
+// outcome class (success, banned target, sandbox escape, missing path).
+
+export type FsOperation = "read" | "write" | "list";
+
+export type FsOutcome =
+  | "success"
+  | "denied_ban"
+  | "denied_sandbox"
+  | "not_found"
+  | "error";
+
+export interface FsEventEntry {
+  kind: "fs_event";
+  moduleId: string;
+  permission: "fs.read_public" | "fs.read_private" | "fs.write_any";
+  toolName?: string;
+  operation: FsOperation;
+  pathHash: string;
+  pathSummary: string;
+  outcome: FsOutcome;
+  bytesTransferred?: number;
+  banned: boolean;
+}
+
+export function writeFsEvent(entry: FsEventEntry): void {
   const path = resolveAuditLogPath();
   try {
     const dir = dirname(path);

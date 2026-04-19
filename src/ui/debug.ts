@@ -119,6 +119,26 @@ const HELP_LINES: readonly string[] = [
 ];
 
 /**
+ * Splits the tail of a `/debug` invocation (everything after the `/debug`
+ * token) into subcommand and verbatim rest. Callers must NOT pre-tokenise
+ * the tail — `/debug call <tool> <json>` embeds JSON that may contain
+ * whitespace, quotes, and braces.
+ */
+export function parseDebugTail(tail: string): {
+  subcommand: string;
+  rest: string;
+} {
+  const trimmed = tail.trim();
+  if (!trimmed) return { subcommand: "", rest: "" };
+  const m = trimmed.match(/^(\S+)(\s+([\s\S]*))?$/);
+  if (!m) return { subcommand: trimmed, rest: "" };
+  return {
+    subcommand: m[1] ?? "",
+    rest: (m[3] ?? "").trim(),
+  };
+}
+
+/**
  * Splits `rest` into the first whitespace-separated token and the verbatim
  * remainder. Used by `/debug call` and `/debug perms` to preserve JSON
  * bodies and tool names that may contain unusual characters.

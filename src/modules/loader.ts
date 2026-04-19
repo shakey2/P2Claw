@@ -1,10 +1,10 @@
 /**
  * P2 Claw — Module loader.
  *
- * Scans `src/extensions/*\/manifest.json`, validates each manifest, refuses
- * any that request `runtime: "mcp"` or are not in the first-party allowlist,
- * then dynamically imports the module's entry point and hands it a typed
- * capability broker plus a tool-registration callback.
+ * Scans `src/extensions/*\/manifest.json`, validates each manifest, and then:
+ *   - runtime "inprocess": dynamic-imports entry and contributes tools.
+ *   - runtime "mcp": starts a Core-owned MCP host and bridges its tools into
+ *     the registry (permissions still come from the manifest).
  *
  * A failure in any individual module is isolated — the loader logs the
  * rejection and continues with the rest.
@@ -24,6 +24,9 @@ import type { Module, ModuleTool } from "./types.js";
 import { registerModuleTool } from "../tools/registry.js";
 import type { ToolDefinition } from "../tools/tool-types.js";
 import { registerLoadedModule, summaryFromManifest } from "./runtime-index.js";
+import { registerMcpTools } from "../mcp/bridge.js";
+import { McpServerHost } from "../mcp/host.js";
+import { registerMcpHost, stopAllMcpHosts } from "../mcp/registry.js";
 
 /**
  * The in-tree `dev-tools` module is only scanned when the caller opts in
@@ -32,6 +35,7 @@ import { registerLoadedModule, summaryFromManifest } from "./runtime-index.js";
  * works even if `src/extensions/dev-tools/` is misconfigured.
  */
 const DEV_TOOLS_FOLDER = "dev-tools";
+const MCP_VERIFY_FIXTURE_FOLDER = "mcp-echo";
 
 export interface LoadModulesOptions {
   /**
@@ -41,6 +45,16 @@ export interface LoadModulesOptions {
    * module index. See DESIGN.md §4.7.
    */
   devMode?: boolean;
+  /**
+   * Optional default timeout for MCP tool calls routed through McpServerHost.
+   * If omitted, the host uses its built-in default.
+   */
+  mcpCallTimeoutMs?: number;
+  /**
+   * Test-harness gate for the in-tree `mcp-echo` fixture. Normal boots should
+   * leave this false so verification fixtures never widen production surface.
+   */
+  mcpVerify?: boolean;
 }
 
 /** Where Core looks for first-party modules. Resolved from this file's location. */
@@ -132,6 +146,7 @@ export async function loadModules(
   options: LoadModulesOptions = {}
 ): Promise<LoadModulesResult> {
   const devMode = options.devMode === true;
+  const mcpVerify = options.mcpVerify === true;
   const result: LoadModulesResult = { loaded: [], rejected: [] };
   const extensionsDir = resolveExtensionsDir();
 
@@ -162,6 +177,9 @@ export async function loadModules(
     if (folder === DEV_TOOLS_FOLDER && !devMode) {
       continue;
     }
+    if (folder === MCP_VERIFY_FIXTURE_FOLDER && !mcpVerify) {
+      continue;
+    }
     const folderPath = join(extensionsDir, folder);
     let manifest: ModuleManifest;
 
@@ -174,96 +192,135 @@ export async function loadModules(
       continue;
     }
 
-    // When running via tsx the compiled .js may not exist; fall back to .ts.
-    let importedEntry = manifest.entry;
-    if (!entryExists(folderPath, importedEntry)) {
-      const withTs = manifest.entry.replace(/\.js$/, ".ts");
-      if (entryExists(folderPath, withTs)) {
-        importedEntry = withTs;
-      } else {
-        result.rejected.push({
-          folder,
-          code: "ERR_ENTRY_NOT_FOUND",
-          reason: `entry "${manifest.entry}" not found in ${folderPath}`,
-        });
-        continue;
+    if (manifest.runtime === "inprocess") {
+      // When running via tsx the compiled .js may not exist; fall back to .ts.
+      let importedEntry = manifest.entry;
+      if (!entryExists(folderPath, importedEntry)) {
+        const withTs = manifest.entry.replace(/\.js$/, ".ts");
+        if (entryExists(folderPath, withTs)) {
+          importedEntry = withTs;
+        } else {
+          result.rejected.push({
+            folder,
+            code: "ERR_ENTRY_NOT_FOUND",
+            reason: `entry "${manifest.entry}" not found in ${folderPath}`,
+          });
+          continue;
+        }
       }
-    }
 
-    const entryAbs = join(folderPath, importedEntry);
-    const entryUrl = pathToFileURL(entryAbs).href;
+      const entryAbs = join(folderPath, importedEntry);
+      const entryUrl = pathToFileURL(entryAbs).href;
 
-    let loaded: { default?: Module } & Partial<Module>;
-    try {
-      loaded = (await import(entryUrl)) as typeof loaded;
-    } catch (err) {
-      const { code, reason } = importErrorMessage(err);
-      result.rejected.push({ folder, code, reason });
-      continue;
-    }
-
-    const mod: Module | undefined = loaded.default ?? (loaded as Module);
-    if (!mod || typeof mod.register !== "function") {
-      result.rejected.push({
-        folder,
-        code: "ERR_MODULE_SHAPE",
-        reason: `module "${manifest.id}" does not default-export a Module with a register() function`,
-      });
-      continue;
-    }
-
-    const ctx = createBroker(manifest, services);
-    const registeredTools: ModuleTool[] = [];
-    const contributeTool = (tool: ModuleTool): void => {
-      registeredTools.push(tool);
-    };
-
-    try {
-      await mod.register({ ctx, contributeTool });
-    } catch (err) {
-      const { code, reason } = importErrorMessage(err);
-      result.rejected.push({ folder, code, reason });
-      continue;
-    }
-
-    // Post-validation: every manifest-declared tool must have been contributed.
-    const contributedNames = new Set(
-      registeredTools.map((t) => t.schema.function.name)
-    );
-    const missing = manifest.tools
-      .map((t) => t.name)
-      .filter((n) => !contributedNames.has(n));
-    if (missing.length > 0) {
-      result.rejected.push({
-        folder,
-        code: "ERR_TOOLS_NOT_CONTRIBUTED",
-        reason: `module "${manifest.id}" declared tools [${missing.join(", ")}] in manifest but did not contribute them at register time`,
-      });
-      continue;
-    }
-
-    let toolsRegistered = 0;
-    let rejected = false;
-    for (const t of registeredTools) {
+      let loaded: { default?: Module } & Partial<Module>;
       try {
-        const def = buildToolDefinition(manifest, t);
-        registerModuleTool(def);
-        toolsRegistered += 1;
+        loaded = (await import(entryUrl)) as typeof loaded;
       } catch (err) {
         const { code, reason } = importErrorMessage(err);
         result.rejected.push({ folder, code, reason });
-        rejected = true;
-        break;
+        continue;
       }
-    }
-    if (rejected) continue;
 
-    // Module fully accepted — publish a runtime-index snapshot so the
-    // dev-tools surface (debug_inspect_module / /debug modules) can answer
-    // without rescanning disk.
-    registerLoadedModule(summaryFromManifest(manifest));
-    result.loaded.push({ id: manifest.id, toolCount: toolsRegistered });
+      const mod: Module | undefined = loaded.default ?? (loaded as Module);
+      if (!mod || typeof mod.register !== "function") {
+        result.rejected.push({
+          folder,
+          code: "ERR_MODULE_SHAPE",
+          reason: `module "${manifest.id}" does not default-export a Module with a register() function`,
+        });
+        continue;
+      }
+
+      const ctx = createBroker(manifest, services);
+      const registeredTools: ModuleTool[] = [];
+      const contributeTool = (tool: ModuleTool): void => {
+        registeredTools.push(tool);
+      };
+
+      try {
+        await mod.register({ ctx, contributeTool });
+      } catch (err) {
+        const { code, reason } = importErrorMessage(err);
+        result.rejected.push({ folder, code, reason });
+        continue;
+      }
+
+      // Post-validation: every manifest-declared tool must have been contributed.
+      const contributedNames = new Set(
+        registeredTools.map((t) => t.schema.function.name)
+      );
+      const missing = manifest.tools
+        .map((t) => t.name)
+        .filter((n) => !contributedNames.has(n));
+      if (missing.length > 0) {
+        result.rejected.push({
+          folder,
+          code: "ERR_TOOLS_NOT_CONTRIBUTED",
+          reason: `module "${manifest.id}" declared tools [${missing.join(", ")}] in manifest but did not contribute them at register time`,
+        });
+        continue;
+      }
+
+      let toolsRegistered = 0;
+      let rejected = false;
+      for (const t of registeredTools) {
+        try {
+          const def = buildToolDefinition(manifest, t);
+          registerModuleTool(def);
+          toolsRegistered += 1;
+        } catch (err) {
+          const { code, reason } = importErrorMessage(err);
+          result.rejected.push({ folder, code, reason });
+          rejected = true;
+          break;
+        }
+      }
+      if (rejected) continue;
+
+      // Module fully accepted — publish a runtime-index snapshot so the
+      // dev-tools surface (debug_inspect_module / /debug modules) can answer
+      // without rescanning disk.
+      registerLoadedModule(summaryFromManifest(manifest));
+      result.loaded.push({ id: manifest.id, toolCount: toolsRegistered });
+      continue;
+    }
+
+    // runtime "mcp"
+    let host: McpServerHost;
+    try {
+      host = new McpServerHost(manifest, {
+        defaultCallTimeoutMs: options.mcpCallTimeoutMs,
+        cwd: folderPath,
+      });
+      const discovered = await host.start();
+      const bridged = registerMcpTools(manifest, discovered, host);
+      await registerMcpHost(manifest.id, host);
+
+      for (const toolName of bridged.undeclaredByManifest) {
+        result.rejected.push({
+          folder,
+          code: "WARN_MCP_TOOL_UNDECLARED",
+          reason: `mcp server "${manifest.id}" reported undeclared tool "${toolName}" (ignored by Core)`,
+        });
+      }
+      for (const toolName of bridged.declaredButMissingFromServer) {
+        result.rejected.push({
+          folder,
+          code: "WARN_MCP_TOOL_MISSING",
+          reason: `manifest "${manifest.id}" declared "${toolName}" but server did not expose it`,
+        });
+      }
+
+      registerLoadedModule(summaryFromManifest(manifest));
+      result.loaded.push({ id: manifest.id, toolCount: bridged.registered });
+    } catch (err) {
+      const { code, reason } = importErrorMessage(err);
+      result.rejected.push({ folder, code, reason });
+      continue;
+    }
   }
 
   return result;
 }
+
+export { stopAllMcpHosts };

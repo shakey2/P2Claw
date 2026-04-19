@@ -13,6 +13,15 @@ import type { Config } from "../config.js";
 import type { Frontend } from "./frontend.js";
 import { createAgentCore } from "./core.js";
 import {
+  clearHistory,
+  compactHistory,
+  getHistoryLength,
+  getActiveProfile,
+} from "../agent.js";
+import { getMemoryCount, listMemories } from "../memory/index.js";
+import { checkHealth, getJoules } from "../player2.js";
+import { getToolCount } from "../tools/registry.js";
+import {
   tryApprovePendingForChat,
   cancelPendingForChat,
 } from "../security/approval.js";
@@ -299,6 +308,47 @@ export function createHtmlFrontend(config: Config): Frontend {
         return;
       }
 
+      if (pathname === "/api/memories" && req.method === "GET") {
+        if (!assertTrustedOrigin(req, res, config)) return;
+        const count = await getMemoryCount(sessionId);
+        const memories =
+          count > 0
+            ? await listMemories(sessionId, undefined, 50)
+            : [];
+        json(res, 200, {
+          count,
+          memories: memories.map((m) => ({
+            id: m.id,
+            category: m.category,
+            content: m.content,
+          })),
+        });
+        return;
+      }
+
+      if (pathname === "/api/clear" && req.method === "POST") {
+        if (!assertTrustedOrigin(req, res, config)) return;
+        const cleared = getHistoryLength(sessionId);
+        clearHistory(sessionId);
+        json(res, 200, { ok: true, cleared });
+        return;
+      }
+
+      if (pathname === "/api/compact" && req.method === "POST") {
+        if (!assertTrustedOrigin(req, res, config)) return;
+        const result = await compactHistory(sessionId);
+        if (result.error) {
+          json(res, 200, { ok: false, error: result.error });
+        } else {
+          json(res, 200, {
+            ok: true,
+            before: result.before,
+            after: result.after,
+          });
+        }
+        return;
+      }
+
       // Dev-mode-only diagnostic endpoint. When dev mode is off, the route
       // 404s so its existence is not leaked (matches the Telegram/CLI
       // "unknown command" posture from DESIGN.md §4.7).
@@ -374,9 +424,33 @@ export function createHtmlFrontend(config: Config): Frontend {
       }
 
       if (pathname === "/api/status" && req.method === "GET") {
+        let player2: { online: boolean; clientVersion?: string } = {
+          online: false,
+        };
+        try {
+          const health = await checkHealth();
+          player2 = { online: true, clientVersion: health.client_version };
+        } catch {
+          player2 = { online: false };
+        }
+        let joules: { joules: number; patronTier: string | null } | null = null;
+        try {
+          const j = await getJoules();
+          joules = {
+            joules: j.joules,
+            patronTier: j.patron_tier ?? null,
+          };
+        } catch {
+          joules = null;
+        }
         json(res, 200, {
           botName: config.botName,
           memoryScopeId: config.memoryScopeId,
+          player2,
+          joules,
+          activeProfile: getActiveProfile(),
+          toolCount: getToolCount(),
+          conversationHistoryMessages: getHistoryLength(sessionId),
         });
         return;
       }

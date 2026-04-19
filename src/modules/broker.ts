@@ -13,17 +13,14 @@
  *   3. Writes an audit entry (granted / denied / not_declared).
  *   4. Runs the primitive and returns.
  *
- * Phase 1 keeps shell/process/net/fs.writeAny/fs.readPrivate/credentials.read
- * STUBBED. The gate + audit pipeline is wired end-to-end, but the actual
- * side-effect-inducing primitives return synthetic results. This is deliberate:
- * it proves the gate without shipping real in-process shell execution before
- * Phase 2's subprocess-isolation work.
+ * High-risk capability gates are wired for all dangerous primitives. Some
+ * surfaces remain intentionally stubbed (for example net/credentials), while
+ * subprocess and filesystem now dispatch real bounded implementations.
  */
 
 import { AsyncLocalStorage } from "async_hooks";
-import { existsSync, readFileSync, statSync } from "fs";
-import { dirname, join, resolve, sep } from "path";
-import { fileURLToPath } from "url";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
+import { dirname, isAbsolute, join, resolve } from "path";
 import type { ModuleManifest } from "./manifest.js";
 import type { ModuleContext, ProcessResult } from "./types.js";
 import { PermissionDeniedError } from "./types.js";
@@ -35,18 +32,31 @@ import {
   writeAudit,
   hashArgs,
   summariseArgs,
+  writeFsEvent,
+  writeSubprocessEvent,
   type AuditEntry,
 } from "./audit.js";
 import { log as coreLog } from "../logger.js";
-
-/** Repo root (works under `tsx src/...` and `node dist/...`). */
-const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+import {
+  runShell,
+  runSpawn,
+  DEFAULT_SUBPROCESS_TIMEOUT_MS,
+  DEFAULT_SUBPROCESS_OUTPUT_CAP_BYTES,
+  SUBPROCESS_CWD_MODE,
+} from "./subprocess.js";
+import {
+  MAX_PRIVATE_READ_BYTES,
+  MAX_PUBLIC_READ_BYTES,
+  MAX_WRITE_ANY_BYTES,
+  PKG_ROOT,
+  checkReadBan,
+  checkWriteBan,
+  containsPath,
+  summarisePath,
+} from "./fs-policy.js";
 
 /** Root of per-module public read area: data/public/<moduleId>/ */
 const PUBLIC_ROOT = join(PKG_ROOT, "data", "public");
-
-/** Hard cap on a single `fs.readPublic` response, in bytes. */
-const MAX_PUBLIC_READ_BYTES = 1 * 1024 * 1024;
 
 // ── Grant context (pre-approved permissions for a call) ─────────
 
@@ -167,14 +177,56 @@ export function createBroker(
     audit(permission, "granted", "totp_preapproved", args);
   }
 
-  // ── Primitive stubs ───────────────────────────────────────────
+  const subprocessPolicy = {
+    timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS,
+    stdoutCapBytes: DEFAULT_SUBPROCESS_OUTPUT_CAP_BYTES,
+    stderrCapBytes: DEFAULT_SUBPROCESS_OUTPUT_CAP_BYTES,
+  } as const;
 
-  function stubProcess(cmd: string, args: string[]): ProcessResult {
-    return {
-      stdout: `[phase1-stub] would run: ${cmd} ${args.join(" ")}`,
-      stderr: "",
-      code: 0,
+  function auditSubprocessResult(
+    permission: "shell.execute" | "process.spawn",
+    cmd: string,
+    args: string[],
+    result: ProcessResult
+  ): void {
+    const payload = {
+      cmd,
+      args,
+      cwd: SUBPROCESS_CWD_MODE,
+      timeoutMs: subprocessPolicy.timeoutMs,
+      stdoutCapBytes: subprocessPolicy.stdoutCapBytes,
+      stderrCapBytes: subprocessPolicy.stderrCapBytes,
     };
+    writeSubprocessEvent({
+      kind: "subprocess_event",
+      moduleId: manifest.id,
+      permission,
+      toolName: currentGrants()?.toolName,
+      outcome: result.timedOut
+        ? "timeout"
+        : result.code === -1
+          ? "spawn_error"
+          : result.code === 0
+            ? "success"
+            : "nonzero_exit",
+      commandHash: hashArgs(payload),
+      commandSummary: summariseArgs(payload),
+      code: result.code,
+      signal: result.signal,
+      timedOut: result.timedOut,
+      stdoutBytes: Buffer.byteLength(result.stdout, "utf8"),
+      stderrBytes: Buffer.byteLength(result.stderr, "utf8"),
+      stdoutTruncated: result.stdoutTruncated,
+      stderrTruncated: result.stderrTruncated,
+    });
+  }
+
+  function isHardBanError(err: unknown): boolean {
+    return (
+      err instanceof PermissionDeniedError &&
+      typeof err.message === "string" &&
+      err.message.startsWith("fs: hard ban")
+    );
   }
 
   return {
@@ -224,7 +276,7 @@ export function createBroker(
           );
         }
         const abs = resolve(base, rel);
-        if (abs !== base && !abs.startsWith(base + sep)) {
+        if (!containsPath(base, abs)) {
           throw new PermissionDeniedError(
             "DENIED",
             `fs.readPublic: path escapes module public dir (${rel})`
@@ -253,25 +305,224 @@ export function createBroker(
       },
       async readPrivate(abs: string): Promise<string> {
         checkGate("fs.read_private", { abs });
-        return `[phase1-stub] fs.readPrivate(${abs})`;
+        if (typeof abs !== "string" || abs.length === 0 || !isAbsolute(abs)) {
+          writeFsEvent({
+            kind: "fs_event",
+            moduleId: manifest.id,
+            permission: "fs.read_private",
+            toolName: currentGrants()?.toolName,
+            operation: "read",
+            pathHash: hashArgs(String(abs)),
+            pathSummary: String(abs),
+            outcome: "denied_sandbox",
+            banned: false,
+          });
+          throw new PermissionDeniedError(
+            "DENIED",
+            "fs.readPrivate: abs must be an absolute path"
+          );
+        }
+        const target = resolve(abs);
+        try {
+          checkReadBan(target);
+        } catch (err) {
+          writeFsEvent({
+            kind: "fs_event",
+            moduleId: manifest.id,
+            permission: "fs.read_private",
+            toolName: currentGrants()?.toolName,
+            operation: "read",
+            pathHash: hashArgs(target),
+            pathSummary: summarisePath(target),
+            outcome: "denied_ban",
+            banned: true,
+          });
+          throw err;
+        }
+        if (!existsSync(target)) {
+          writeFsEvent({
+            kind: "fs_event",
+            moduleId: manifest.id,
+            permission: "fs.read_private",
+            toolName: currentGrants()?.toolName,
+            operation: "read",
+            pathHash: hashArgs(target),
+            pathSummary: summarisePath(target),
+            outcome: "not_found",
+            banned: false,
+          });
+          throw new PermissionDeniedError(
+            "DENIED",
+            `fs.readPrivate: file not found (${target})`
+          );
+        }
+        const info = statSync(target);
+        if (!info.isFile()) {
+          writeFsEvent({
+            kind: "fs_event",
+            moduleId: manifest.id,
+            permission: "fs.read_private",
+            toolName: currentGrants()?.toolName,
+            operation: "read",
+            pathHash: hashArgs(target),
+            pathSummary: summarisePath(target),
+            outcome: "denied_sandbox",
+            banned: false,
+          });
+          throw new PermissionDeniedError(
+            "DENIED",
+            `fs.readPrivate: not a regular file (${target})`
+          );
+        }
+        if (info.size > MAX_PRIVATE_READ_BYTES) {
+          writeFsEvent({
+            kind: "fs_event",
+            moduleId: manifest.id,
+            permission: "fs.read_private",
+            toolName: currentGrants()?.toolName,
+            operation: "read",
+            pathHash: hashArgs(target),
+            pathSummary: summarisePath(target),
+            outcome: "denied_sandbox",
+            banned: false,
+          });
+          throw new PermissionDeniedError(
+            "DENIED",
+            `fs.readPrivate: file exceeds ${MAX_PRIVATE_READ_BYTES}-byte cap (${info.size} bytes)`
+          );
+        }
+        const body = readFileSync(target, "utf-8");
+        writeFsEvent({
+          kind: "fs_event",
+          moduleId: manifest.id,
+          permission: "fs.read_private",
+          toolName: currentGrants()?.toolName,
+          operation: "read",
+          pathHash: hashArgs(target),
+          pathSummary: summarisePath(target),
+          outcome: "success",
+          bytesTransferred: Buffer.byteLength(body, "utf-8"),
+          banned: false,
+        });
+        return body;
       },
       async writeAny(abs: string, data: string): Promise<void> {
-        checkGate("fs.write_any", { abs, bytes: data.length });
-        // Stub: intentionally does nothing.
+        checkGate("fs.write_any", {
+          abs,
+          bytes: typeof data === "string" ? Buffer.byteLength(data, "utf-8") : 0,
+        });
+        if (typeof abs !== "string" || abs.length === 0 || !isAbsolute(abs)) {
+          writeFsEvent({
+            kind: "fs_event",
+            moduleId: manifest.id,
+            permission: "fs.write_any",
+            toolName: currentGrants()?.toolName,
+            operation: "write",
+            pathHash: hashArgs(String(abs)),
+            pathSummary: String(abs),
+            outcome: "denied_sandbox",
+            banned: false,
+          });
+          throw new PermissionDeniedError(
+            "DENIED",
+            "fs.writeAny: abs must be an absolute path"
+          );
+        }
+        if (typeof data !== "string") {
+          throw new PermissionDeniedError(
+            "DENIED",
+            "fs.writeAny: data must be a string"
+          );
+        }
+        const target = resolve(abs);
+        const bytes = Buffer.byteLength(data, "utf-8");
+        if (bytes > MAX_WRITE_ANY_BYTES) {
+          writeFsEvent({
+            kind: "fs_event",
+            moduleId: manifest.id,
+            permission: "fs.write_any",
+            toolName: currentGrants()?.toolName,
+            operation: "write",
+            pathHash: hashArgs(target),
+            pathSummary: summarisePath(target),
+            outcome: "denied_sandbox",
+            banned: false,
+          });
+          throw new PermissionDeniedError(
+            "DENIED",
+            `fs.writeAny: payload exceeds ${MAX_WRITE_ANY_BYTES}-byte cap (${bytes} bytes)`
+          );
+        }
+        try {
+          checkWriteBan(target);
+        } catch (err) {
+          writeFsEvent({
+            kind: "fs_event",
+            moduleId: manifest.id,
+            permission: "fs.write_any",
+            toolName: currentGrants()?.toolName,
+            operation: "write",
+            pathHash: hashArgs(target),
+            pathSummary: summarisePath(target),
+            outcome: isHardBanError(err) ? "denied_ban" : "error",
+            banned: isHardBanError(err),
+          });
+          throw err;
+        }
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, data, "utf-8");
+        writeFsEvent({
+          kind: "fs_event",
+          moduleId: manifest.id,
+          permission: "fs.write_any",
+          toolName: currentGrants()?.toolName,
+          operation: "write",
+          pathHash: hashArgs(target),
+          pathSummary: summarisePath(target),
+          outcome: "success",
+          bytesTransferred: bytes,
+          banned: false,
+        });
       },
     },
 
     shell: {
       async execute(cmd: string, args: string[]): Promise<ProcessResult> {
-        checkGate("shell.execute", { cmd, args });
-        return stubProcess(cmd, args);
+        const safeCmd = typeof cmd === "string" ? cmd : "";
+        const safeArgs = Array.isArray(args)
+          ? args.filter((v): v is string => typeof v === "string")
+          : [];
+        checkGate("shell.execute", {
+          cmd: safeCmd,
+          args: safeArgs,
+          cwd: SUBPROCESS_CWD_MODE,
+          timeoutMs: subprocessPolicy.timeoutMs,
+          stdoutCapBytes: subprocessPolicy.stdoutCapBytes,
+          stderrCapBytes: subprocessPolicy.stderrCapBytes,
+        });
+        const result = await runShell(safeCmd, safeArgs, subprocessPolicy);
+        auditSubprocessResult("shell.execute", safeCmd, safeArgs, result);
+        return result;
       },
     },
 
     process: {
       async spawn(cmd: string, args: string[]): Promise<ProcessResult> {
-        checkGate("process.spawn", { cmd, args });
-        return stubProcess(cmd, args);
+        const safeCmd = typeof cmd === "string" ? cmd : "";
+        const safeArgs = Array.isArray(args)
+          ? args.filter((v): v is string => typeof v === "string")
+          : [];
+        checkGate("process.spawn", {
+          cmd: safeCmd,
+          args: safeArgs,
+          cwd: SUBPROCESS_CWD_MODE,
+          timeoutMs: subprocessPolicy.timeoutMs,
+          stdoutCapBytes: subprocessPolicy.stdoutCapBytes,
+          stderrCapBytes: subprocessPolicy.stderrCapBytes,
+        });
+        const result = await runSpawn(safeCmd, safeArgs, subprocessPolicy);
+        auditSubprocessResult("process.spawn", safeCmd, safeArgs, result);
+        return result;
       },
     },
 

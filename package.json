@@ -20,6 +20,7 @@
   ],
   "license": "UNLICENSED",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^16.4.7",
     "grammy": "^1.35.0",
     "openai": "^4.85.0",

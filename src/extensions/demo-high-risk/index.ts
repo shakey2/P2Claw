@@ -3,7 +3,7 @@
  *
  * Declares the high-risk `shell.execute` permission so that invoking
  * `demo_shell` exercises the TOTP approval pipeline end-to-end. The broker's
- * shell primitive is stubbed in Phase 1 — no real subprocess is spawned.
+ * shell primitive now runs a real subprocess with strict Core guardrails.
  */
 
 import type { Module, ModuleContext, ModuleTool } from "../../modules/types.js";
@@ -20,13 +20,13 @@ function makeDemoShell(ctx: ModuleContext): ModuleTool {
       function: {
         name: "demo_shell",
         description:
-          "Pretends to run a shell command. Phase 1 stubs the actual shell primitive — use this to verify the TOTP approval flow + audit log.",
+          "Run a shell command through Core's high-risk approval + audit pipeline.",
         parameters: {
           type: "object",
           properties: {
             cmd: {
               type: "string",
-              description: "The command name (demo only; not actually executed).",
+              description: "The command name to execute.",
             },
             args: {
               type: "array",
@@ -55,7 +55,6 @@ function makeDemoShell(ctx: ModuleContext): ModuleTool {
 
       return JSON.stringify({
         module: ctx.moduleId,
-        stubbed: true,
         ...result,
       });
     },

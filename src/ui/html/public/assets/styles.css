@@ -145,6 +145,13 @@ nav a {
   width: 8rem;
 }
 
+.approval-feedback {
+  display: block;
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+  color: #f87171;
+}
+
 .approval-actions {
   display: flex;
   gap: 0.5rem;

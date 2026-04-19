@@ -181,19 +181,27 @@ function parseDebugInput(message) {
 approvalBtn.addEventListener("click", async () => {
   const code = approvalCode.value.replace(/\s+/g, "");
   approvalCode.value = "";
+  const feedbackEl = document.getElementById("approvalFeedback");
+  if (feedbackEl) feedbackEl.textContent = "";
   try {
-    await fetch("/api/approve", {
+    const r = await fetch("/api/approve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code }),
     });
+    const j = await r.json().catch(() => ({}));
+    if (!j.ok && feedbackEl) {
+      feedbackEl.textContent = j.message || "Invalid code. Try again.";
+    }
   } catch {
-    /* ignore */
+    if (feedbackEl) feedbackEl.textContent = "Request failed. Try again.";
   }
 });
 
 approvalCancelBtn.addEventListener("click", async () => {
   approvalCode.value = "";
+  const feedbackEl = document.getElementById("approvalFeedback");
+  if (feedbackEl) feedbackEl.textContent = "";
   try {
     await fetch("/api/cancel", { method: "POST" });
   } catch {
@@ -275,5 +283,7 @@ form.addEventListener("submit", async (e) => {
     if (poll) clearInterval(poll);
     approval.classList.add("hidden");
     approvalText.textContent = "";
+    const feedbackEl = document.getElementById("approvalFeedback");
+    if (feedbackEl) feedbackEl.textContent = "";
   }
 });

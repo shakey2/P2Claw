@@ -76,6 +76,9 @@ export interface Config {
    * relax the TOTP gate or the broker audit. See DESIGN.md §4.7.
    */
   devMode: boolean;
+
+  /** Default timeout for MCP tool calls routed through Core (ms). */
+  mcpCallTimeoutMs: number;
 }
 
 // ── Hard-coded absolute safety ceiling ──────────────────────────
@@ -143,6 +146,19 @@ function parseMemoryScopeId(raw: string | undefined): number {
       `Invalid P2CLAW_MEMORY_CHAT_ID "${raw ?? ""}". Using default 1.`
     );
     return 1;
+  }
+  return n;
+}
+
+function parseMcpCallTimeoutMs(raw: string | undefined): number {
+  const n = parseInt(raw ?? "30000", 10);
+  if (!Number.isFinite(n) || n < 1000) {
+    console.warn(`⚠️  Invalid MCP_CALL_TIMEOUT_MS. Using 30000.`);
+    return 30000;
+  }
+  if (n > 300000) {
+    console.warn(`⚠️  MCP_CALL_TIMEOUT_MS too high (${n}). Capping to 300000.`);
+    return 300000;
   }
   return n;
 }
@@ -229,6 +245,7 @@ export function loadConfig(): Config {
   const memoryScopeId = parseMemoryScopeId(process.env.P2CLAW_MEMORY_CHAT_ID);
 
   const devMode = parseBool(process.env.P2CLAW_DEV_MODE);
+  const mcpCallTimeoutMs = parseMcpCallTimeoutMs(process.env.MCP_CALL_TIMEOUT_MS);
 
   return {
     player2GameKey,
@@ -245,6 +262,7 @@ export function loadConfig(): Config {
     totpSecretBase32,
     memoryScopeId,
     devMode,
+    mcpCallTimeoutMs,
   };
 }
 

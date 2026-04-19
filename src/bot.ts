@@ -13,14 +13,13 @@ import { Bot, InputFile } from "grammy";
 import type { Context } from "grammy";
 import type { Config, VoiceOutputMode } from "./config.js";
 import {
-  processMessage,
   clearHistory,
   getHistoryLength,
   setActiveProfile,
   getActiveProfile,
   compactHistory,
-  type ProcessMessageOptions,
 } from "./agent.js";
+import { createAgentCore } from "./ui/core.js";
 import {
   tryApproveWithTotp,
   tryApprovePendingForChat,
@@ -46,7 +45,11 @@ import {
 } from "./memory/index.js";
 import { log } from "./logger.js";
 import { requestGracefulShutdown } from "./graceful-shutdown.js";
-import { handleDebugCommand, type DebugResult } from "./ui/debug.js";
+import {
+  handleDebugCommand,
+  parseDebugTail,
+  type DebugResult,
+} from "./ui/debug.js";
 
 /**
  * Player2 TTS chunking: `/v1/tts/speak` fails on long text (often HTTP 500).
@@ -164,25 +167,6 @@ async function maybeSendTtsAfterReply(
   }
 }
 
-/**
- * Splits the tail of a `/debug ...` message into subcommand + verbatim rest.
- * `raw` is whatever followed `/debug ` — grammY gives us this as `ctx.match`.
- * We MUST NOT tokenise the tail because `/debug call <tool> <json>` embeds
- * JSON that may contain whitespace / quotes / braces.
- */
-function parseTelegramDebugMatch(
-  raw: string
-): { subcommand: string; rest: string } {
-  const trimmed = raw.trim();
-  if (!trimmed) return { subcommand: "", rest: "" };
-  const m = trimmed.match(/^(\S+)(\s+([\s\S]*))?$/);
-  if (!m) return { subcommand: trimmed, rest: "" };
-  return {
-    subcommand: m[1] ?? "",
-    rest: (m[3] ?? "").trim(),
-  };
-}
-
 function escapeMarkdownV1(text: string): string {
   return text.replace(/([_*`\[])/g, "\\$1");
 }
@@ -269,16 +253,6 @@ function renderDebugForTelegram(result: DebugResult): string[] {
   return splitMessage(body, 4096);
 }
 
-function buildProcessMessageOptions(config: Config, ctx: Context): ProcessMessageOptions {
-  return {
-    totpSecretBase32: config.totpSecretBase32,
-    memoryScopeId: config.memoryScopeId,
-    sendPendingApproval: async (text: string) => {
-      await ctx.reply(text);
-    },
-  };
-}
-
 /**
  * Per-chat FIFO queue so long agent runs (e.g. waiting on TOTP) do not block
  * grammY's update loop: the next Telegram update (your 6-digit code) can run
@@ -298,6 +272,7 @@ function enqueueAgentJob(chatId: number, job: () => Promise<void>): void {
  * Creates and configures the Telegram bot.
  */
 export function createBot(config: Config): Bot {
+  const core = createAgentCore(config);
   const bot = new Bot(config.telegramBotToken);
 
   // ── Whitelist middleware ─────────────────────────────────────
@@ -492,7 +467,7 @@ export function createBot(config: Config): Bot {
     bot.command("debug", async (ctx) => {
       const chatId = ctx.chat?.id;
       if (chatId === undefined) return;
-      const { subcommand, rest } = parseTelegramDebugMatch(ctx.match ?? "");
+      const { subcommand, rest } = parseDebugTail((ctx.match ?? "").trimStart());
       const result = await handleDebugCommand({
         devMode: true,
         sessionId: chatId,
@@ -773,13 +748,11 @@ export function createBot(config: Config): Bot {
       try {
         await ctx.replyWithChatAction("typing");
         console.log(`   → Sending to agent loop...`);
-      const response = await processMessage(
-        ctx.chat.id,
-        text,
-        config.botName,
-        config.maxAgentIterations,
-        buildProcessMessageOptions(config, ctx)
-      );
+      const response = await core.process(ctx.chat.id, text, {
+        sendPendingApproval: async (promptText: string) => {
+          await ctx.reply(promptText);
+        },
+      });
       console.log(`   ← Agent returned ${response.length} chars`);
 
       if (response) {
@@ -875,13 +848,11 @@ export function createBot(config: Config): Bot {
       console.log(`   → Queueing transcription for agent loop...`);
       enqueueAgentJob(ctx.chat.id, async () => {
         await ctx.replyWithChatAction("typing");
-        const response = await processMessage(
-          ctx.chat.id,
-          transcript,
-          config.botName,
-          config.maxAgentIterations,
-          buildProcessMessageOptions(config, ctx)
-        );
+        const response = await core.process(ctx.chat.id, transcript, {
+          sendPendingApproval: async (promptText: string) => {
+            await ctx.reply(promptText);
+          },
+        });
         console.log(`   ← Agent returned ${response.length} chars`);
 
         const fullReply = `🎤 *I heard:* "${transcript}"\n\n${response}`;
