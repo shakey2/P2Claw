@@ -9,3 +9,4 @@ data/*.log
 transcript.json
 filtered_snippet.txt
 dist/
+.tmp.driveupload/
