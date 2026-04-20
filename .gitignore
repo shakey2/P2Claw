@@ -6,6 +6,8 @@ node_modules/
 data/p2claw.db
 data/p2claw.log
 data/*.log
+data/*.log.1
+data/workspace/
 transcript.json
 filtered_snippet.txt
 dist/

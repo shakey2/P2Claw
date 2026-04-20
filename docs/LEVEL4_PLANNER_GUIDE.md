@@ -1,5 +1,7 @@
 # Level 4 Planner Guide
 
+> **Status: Complete (2026-04-19).** Parts A–G are implemented and verified. This guide is retained for historical reference — it describes the bounded work plan that was followed to complete Level 4. See `DESIGN.md` §6 for the final roadmap status and decision log.
+
 > Planner-facing guide for finishing Level 4 in bounded chunks.
 > Use this when you want a planner to tackle one part at a time without
 > re-scoping the whole project on every pass.

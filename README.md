@@ -100,7 +100,10 @@ That's it. The Player2 API connection is built in — just make sure the Player2
 - **No public web server** — Telegram uses long-polling by default, and the optional HTML UI binds to loopback only (`127.0.0.1` / `::1`). Nothing is exposed to the LAN or internet by default.
 - **Secrets in .env only** — Your Telegram token never appears in code or logs.
 - **Local-first** — Everything runs on your machine. Messages are processed locally via Player2.
-- **Level 4 Phase 1 — TOTP approvals** — High-risk tools (demo: `high_risk_demo`) ask for your authenticator code. **Telegram:** while a challenge is open, send **only the 6-digit code** (or `APPROVE <8-char-id> <code>`); those messages are handled **before** the AI sees them. **CLI and HTML:** same TOTP code-entry flow — the CLI prompts in the terminal; the loopback HTML UI shows an approval panel and posts codes to a separate `/api/approve` endpoint (not chat). Codes and approval prompts are never added to model context or chat history in any frontend. Set `TOTP_SECRET_BASE32` in `.env` (see `.env.example`). See [`.agent/workflows/security-considerations.md`](.agent/workflows/security-considerations.md) for why permission boundaries stay in the bot, not the LLM.
+- **TOTP approvals** — High-risk tools (e.g., `file_write`, shell commands via modules) ask for your authenticator code. **Telegram:** while a challenge is open, send **only the 6-digit code** (or `APPROVE <8-char-id> <code>`); those messages are handled **before** the AI sees them. **CLI and HTML:** same TOTP code-entry flow — the CLI prompts in the terminal; the loopback HTML UI shows an approval panel and posts codes to a separate `/api/approve` endpoint (not chat). Codes and approval prompts are never added to model context or chat history in any frontend. Set `TOTP_SECRET_BASE32` in `.env` (see `.env.example`).
+- **File sandbox** — `file_read` / `file_write` / `file_list` are confined to `data/workspace/`. Hard bans prevent writes to `.env`, source tree, audit log, and `p2claw.db`. Reads are also banned from `.env` family files.
+- **MCP isolation** — MCP servers run as separate processes with Core-owned supervision. Permissions come from the module manifest, not the server; undeclared tools are silently ignored.
+- **Append-only audit log** — Every permission decision, approval outcome, subprocess execution, file operation, and MCP event is logged to `data/p2claw.audit.log` (JSONL, rotated at 5 MB). Arguments are hashed; secrets are never written.
 - **Never paste your Base32 secret into Telegram** — only the six-digit rotating code when the bot is waiting for approval.
 - **No raw model output logging by default** — set `P2CLAW_LOG_RAW_MODEL=true` in `.env` to print a short raw response preview for debugging.
 
@@ -119,6 +122,7 @@ That's it. The Player2 API connection is built in — just make sure the Player2
 | `/cancel` | Cancel an in-progress `/setup` session |
 | `/totp_status` | Whether `TOTP_SECRET_BASE32` is set (boolean only; never prints the secret) |
 | `/totp_enroll_help` | How to enroll an authenticator app and use `APPROVE` messages |
+| `/debug` | Developer diagnostics (requires `P2CLAW_DEV_MODE=true`). Subcommands: `list`, `modules`, `audit`, `call`, `perms`, `help`. Not visible when dev mode is off. |
 | `/shutdown` | Gracefully stop the bot (saves DB, releases bot lock) |
 
 ## 🖥️ CLI Commands
@@ -128,11 +132,14 @@ When `UI_MODE=cli`, you can use:
 | Command | Description |
 |---|---|
 | `/help` | Show CLI help |
+| `/status` | Check Player2 health, joule balance, active profile |
+| `/profile [name]` | List AI profiles or switch to one |
 | `/memories` | List recent memories |
 | `/compact` | Summarize older conversation history |
 | `/clear` | Clear conversation history (memories unaffected) |
 | `/cancel` | Abort a pending TOTP approval request |
 | `/totp_status` | Whether `TOTP_SECRET_BASE32` is set |
+| `/totp_enroll_help` | How to enroll an authenticator app |
 | `/shutdown` | Graceful shutdown |
 | `/exit` | Quit CLI |
 
@@ -190,49 +197,72 @@ User (Telegram) ←→ grammY (long-polling) ←→ Agent Loop ←→ Player2 Ap
 
 ```
 src/
-├── index.ts              # Boot sequence
-├── config.ts             # Environment loading & validation
-├── security.ts           # API credential resolution & protection
+├── index.ts              # Boot sequence — the only entry point
+├── config.ts             # Env loading, validation, typed Config object
+├── security.ts           # Key resolution (env → embedded fallback)
 ├── player2.ts            # Player2/OpenAI SDK client + health ping
-├── bot.ts                # Telegram bot setup & message routing
-├── agent.ts              # Agentic tool loop
+├── bot.ts                # Telegram bot wiring (frontend implementation)
+├── agent.ts              # Agentic tool loop, memory injection, context pruning
 ├── ui/                   # Frontends (Telegram, CLI, loopback HTML)
-│   ├── core.ts            # Shared agent core wrapper for frontends
-│   ├── frontend.ts        # Frontend interface + hooks types
-│   ├── telegram.ts        # Telegram frontend wrapper
-│   ├── cli.ts             # CLI REPL frontend
-│   ├── html.ts            # Loopback HTTP server + chat + config page
-│   └── html/public/       # Static assets for the loopback HTML GUI
+│   ├── core.ts           # AgentCore wrapper for multiple frontends
+│   ├── frontend.ts       # Frontend interface + hooks types
+│   ├── telegram.ts       # Telegram frontend wrapper (optional at runtime)
+│   ├── cli.ts            # CLI REPL frontend (optional at runtime)
+│   ├── html.ts           # Loopback HTTP server + chat + config page (UI_MODE=html)
+│   ├── debug.ts          # Shared /debug command handler (frontend-agnostic)
+│   └── html/public/      # Static assets for the local HTML GUI
 ├── memory/
-│   ├── index.ts          # Provider router + barrel export
+│   ├── index.ts          # Barrel export
 │   ├── db.ts             # sql.js init, schema, debounced persistence
-│   ├── store.ts          # Memory CRUD + FTS5 search
+│   ├── store.ts          # Memory CRUD, FTS5 search, context extraction
 │   └── module-store.ts   # Per-module KV store (backs ctx.memory in broker)
 ├── security/
-│   ├── totp.ts           # RFC 6238 verification (Node crypto)
-│   └── approval.ts       # Pending challenges + TOTP gate
+│   ├── totp.ts           # RFC 6238 TOTP verify (crypto only)
+│   └── approval.ts       # Pending challenges + TOTP-gated approval
 ├── tools/
-│   ├── registry.ts       # Tool registration, dispatch, high-risk TOTP gate
+│   ├── registry.ts       # Tool registration, dispatch, high-risk gate
 │   ├── tool-types.ts     # Shared ToolDefinition (avoids import cycles)
 │   ├── get-current-time.ts
-│   ├── remember.ts
-│   ├── recall.ts
-│   ├── forget.ts
-│   └── high-risk-demo.ts # Stub high-risk tool (Level 4 Phase 1)
+│   ├── remember.ts       # Store a memory
+│   ├── recall.ts         # Search memories (FTS5)
+│   ├── forget.ts         # Delete a memory
+│   ├── high-risk-demo.ts # TOTP gate exerciser (risk: high)
+│   ├── file-read.ts      # Safe workspace file read (data/workspace)
+│   ├── file-write.ts     # High-risk workspace file write (TOTP-gated)
+│   └── file-list.ts      # Safe workspace directory listing
 ├── modules/              # Module framework (DESIGN.md §4.7)
-│   ├── permissions.ts    # Fixed broad permission catalog
-│   ├── manifest.ts       # Strict manifest.json validator
-│   ├── broker.ts         # Capability broker (TOTP-gated)
-│   ├── loader.ts         # Scans src/extensions/* and registers tools
-│   ├── audit.ts          # Append-only JSONL decision log
-│   └── types.ts          # Shared Module / ModuleContext / ModuleTool types
-└── extensions/           # First-party modules (allowlisted)
-    ├── demo-safe/        # Exercises safe primitives (memory + fs.read_public)
-    └── demo-high-risk/   # Exercises TOTP gate (shell.execute stubbed)
+│   ├── permissions.ts    # Fixed broad permission catalog (Core-owned)
+│   ├── manifest.ts       # Strict manifest.json validator (inprocess + mcp)
+│   ├── broker.ts         # Capability broker (ModuleContext factory)
+│   ├── loader.ts         # Scans src/extensions/*, validates, registers tools
+│   ├── audit.ts          # Append-only JSONL decision log (data/p2claw.audit.log)
+│   ├── types.ts          # Shared Module / ModuleContext / ModuleTool types
+│   ├── subprocess.ts     # Core subprocess execution (timeout, output cap, env allowlist)
+│   ├── fs-policy.ts      # Core file-system sandbox + hard-ban policy
+│   └── runtime-index.ts  # In-memory loaded-module index for dev-tools
+├── mcp/                  # MCP bridge runtime (DESIGN.md §4.7)
+│   ├── host.ts           # Core-owned MCP server host (lifecycle, crash restart)
+│   ├── client.ts         # MCP stdio client wrapper (SDK-based)
+│   ├── bridge.ts         # MCP-to-registry tool bridge
+│   ├── registry.ts       # Active MCP host registry + shutdown helper
+│   └── types.ts          # Shared MCP types (lifecycle, event entries)
+├── extensions/           # First-party modules (allowlisted)
+│   ├── demo-safe/        # Demo module using only safe permissions
+│   ├── demo-high-risk/   # Demo module exercising real shell.execute via broker
+│   ├── dev-tools/        # Developer diagnostics (gated by P2CLAW_DEV_MODE)
+│   └── mcp-echo/         # MCP echo fixture (verification harness only)
+└── types/
+    └── sql.js.d.ts       # Type declarations for sql.js
+
+data/
+├── p2claw.db             # SQLite database (created at runtime)
+├── p2claw.audit.log      # Append-only JSONL audit log (rotated at 5 MB)
+├── workspace/            # Sandboxed file area for file_read/write/list tools
+└── personality.md        # User-editable personality config
 
 scripts/
 ├── encode-key.ts         # Utility to encode your game key for embedding
-└── verify-modules.ts     # npm run verify — module framework integration check
+└── verify-modules.ts     # npm run verify — module framework integration check (90+ checks)
 ```
 
 ### Embedding the Player2 Game Key

@@ -192,11 +192,13 @@ src/
 │   ├── telegram.ts   # Telegram frontend wrapper (optional at runtime)
 │   ├── cli.ts        # CLI REPL frontend (optional at runtime)
 │   ├── html.ts       # Loopback HTTP server + chat + config page (UI_MODE=html)
+│   ├── debug.ts      # Shared /debug command handler (frontend-agnostic)
 │   └── html/public/  # Static assets for the local HTML GUI
 ├── memory/
 │   ├── index.ts      # Barrel export
 │   ├── db.ts         # sql.js init, schema, debounced persistence
-│   └── store.ts      # Memory CRUD, FTS5 search, context extraction
+│   ├── store.ts      # Memory CRUD, FTS5 search, context extraction
+│   └── module-store.ts # Per-module KV store (backs ctx.memory in broker)
 ├── security/
 │   ├── totp.ts       # RFC 6238 TOTP verify (crypto only)
 │   └── approval.ts   # Pending challenges + TOTP-gated approval
@@ -207,26 +209,42 @@ src/
 │   ├── remember.ts   # Store a memory
 │   ├── recall.ts     # Search memories (FTS5)
 │   ├── forget.ts     # Delete a memory
-│   └── high-risk-demo.ts  # Level 4 stub (risk: high)
-├── modules/          # Module framework (Phase 1) — §4.7
+│   ├── high-risk-demo.ts  # TOTP gate exerciser (risk: high)
+│   ├── file-read.ts  # Safe workspace file read (data/workspace)
+│   ├── file-write.ts # High-risk workspace file write (TOTP-gated)
+│   └── file-list.ts  # Safe workspace directory listing
+├── modules/          # Module framework — §4.7
 │   ├── permissions.ts # Fixed broad permission catalog (Core-owned)
-│   ├── manifest.ts    # Strict manifest.json validator
+│   ├── manifest.ts    # Strict manifest.json validator (inprocess + mcp)
 │   ├── broker.ts      # Capability broker (ModuleContext factory)
 │   ├── loader.ts      # Scans src/extensions/*, validates, registers tools
 │   ├── audit.ts       # Append-only JSONL decision log (data/p2claw.audit.log)
-│   └── types.ts       # Shared Module / ModuleContext / ModuleTool types
+│   ├── types.ts       # Shared Module / ModuleContext / ModuleTool types
+│   ├── subprocess.ts  # Core subprocess execution (timeout, output cap, env allowlist)
+│   ├── fs-policy.ts   # Core file-system sandbox + hard-ban policy
+│   └── runtime-index.ts # In-memory loaded-module index for dev-tools introspection
+├── mcp/              # MCP bridge runtime — §4.7
+│   ├── host.ts       # Core-owned MCP server host (lifecycle, crash restart)
+│   ├── client.ts     # MCP stdio client wrapper (SDK-based)
+│   ├── bridge.ts     # MCP-to-registry tool bridge
+│   ├── registry.ts   # Active MCP host registry + shutdown helper
+│   └── types.ts      # Shared MCP types (lifecycle, event entries)
 ├── extensions/       # First-party modules — manifest.json + entry (§2.8, §4.7)
 │   ├── demo-safe/         # Demo module using only safe permissions
-│   └── demo-high-risk/    # Demo module declaring shell.execute (Phase 1: stubbed)
+│   ├── demo-high-risk/    # Demo module exercising real shell.execute via broker
+│   ├── dev-tools/         # Developer diagnostics (gated by P2CLAW_DEV_MODE)
+│   └── mcp-echo/          # MCP echo fixture (verification harness only)
 └── types/
     └── sql.js.d.ts   # Type declarations for sql.js
 
 data/
 ├── p2claw.db         # SQLite database (created at runtime)
+├── p2claw.audit.log  # Append-only JSONL audit log (rotated at 5 MB)
+├── workspace/        # Sandboxed file area for file_read/write/list tools
 └── personality.md    # User-editable personality config
 ```
 
-*Packaged optional modules (npm or local) register via the §2.8 surfaces; MCP servers remain out-of-process.*
+*Packaged optional modules (npm or local) register via the §2.8 surfaces; MCP servers run out-of-process with Core-owned permissions.*
 
 ### 4.6 Frontends (Telegram optional)
 
@@ -243,19 +261,19 @@ Runtime selection is via `UI_MODE` (`telegram`, `cli`, or `html`). The intent is
 
 Optional capabilities and tools register through a strict module framework so Core remains the only entity that reaches dangerous primitives (shell, fs, net, credentials).
 
-**Trust model.** Phase 1 ships **in-process** modules only, and only from a hardcoded first-party allowlist. In-process modules are a **code-review** trust boundary, not an OS sandbox. Third-party / untrusted modules will land in Phase 2 as **MCP subprocesses** for OS-level isolation. A `manifest.json` that requests `runtime: "mcp"` is currently rejected with `ERR_MCP_NOT_IMPLEMENTED_PHASE1`. The `firstParty: true` manifest flag is a required informational marker, **not** a security claim — the `FIRST_PARTY_ALLOWLIST` map (which binds each allowed folder to a specific reverse-DNS id) plus the capability broker's permission and TOTP gates are the authoritative boundary.
+**Trust model.** The framework supports two runtimes: **in-process** (`runtime: "inprocess"`) for first-party modules from a hardcoded allowlist, and **MCP** (`runtime: "mcp"`) for out-of-process MCP stdio servers. In-process modules are a **code-review** trust boundary, not an OS sandbox. MCP modules run in separate child processes with Core-owned supervision (startup timeout, crash-restart, call-level timeouts). The `firstParty: true` manifest flag is a required informational marker, **not** a security claim — the `FIRST_PARTY_ALLOWLIST` map (which binds each allowed folder to a specific reverse-DNS id) plus the capability broker's permission and TOTP gates are the authoritative boundary.
 
-**Fixed permission catalog.** Core owns a fixed set of ~10 broad permission categories (`time.now`, `log.info`, `memory.read/write`, `fs.read_public`, `fs.read_private`, `fs.write_any`, `shell.execute`, `process.spawn`, `net.outbound`, `credentials.read`). Each is labelled `safe` or `high`. Modules cannot declare custom permissions — adding a category requires a Core release. See [src/modules/permissions.ts](src/modules/permissions.ts).
+**Fixed permission catalog.** Core owns a fixed set of 11 broad permission categories (`time.now`, `log.info`, `memory.read`, `memory.write`, `fs.read_public`, `fs.read_private`, `fs.write_any`, `shell.execute`, `process.spawn`, `net.outbound`, `credentials.read`). Each is labelled `safe` or `high`. Modules cannot declare custom permissions — adding a category requires a Core release. See [src/modules/permissions.ts](src/modules/permissions.ts).
 
-**Manifest.** Each module ships a `manifest.json` validated in [src/modules/manifest.ts](src/modules/manifest.ts): reverse-DNS id, semver version, `runtime: "inprocess"`, `firstParty: true` (the module's folder name must be a key in `FIRST_PARTY_ALLOWLIST` **and** `manifest.id` must equal the reverse-DNS id that folder is bound to — this folder->id binding prevents a rename-and-swap spoof of first-party identity), permissions must be a subset of the catalog, and each tool's `requires` must be a subset of the module's declared permissions.
+**Manifest.** Each module ships a `manifest.json` validated in [src/modules/manifest.ts](src/modules/manifest.ts): reverse-DNS id, semver version, `runtime: "inprocess"` or `"mcp"`, `firstParty: true` (the module's folder name must be a key in `FIRST_PARTY_ALLOWLIST` **and** `manifest.id` must equal the reverse-DNS id that folder is bound to — this folder->id binding prevents a rename-and-swap spoof of first-party identity), permissions must be a subset of the catalog, and each tool's `requires` must be a subset of the module's declared permissions. MCP manifests additionally declare a `mcp` config block (command, args, startup timeout, restart policy, optional env) validated for shell-metacharacter injection and secret-passthrough bans.
 
-**Capability broker.** Modules never import Node builtins directly. The loader hands each module a typed `ModuleContext` ([src/modules/broker.ts](src/modules/broker.ts), [src/modules/types.ts](src/modules/types.ts)) whose methods each (1) verify the caller's manifest declared the matching permission, (2) gate high-risk permissions through the existing TOTP approval path ([src/security/approval.ts](src/security/approval.ts)), (3) write a decision to the append-only audit log, and (4) only then dispatch the primitive. The **safe** primitives (`log.info`, `time.now`, `memory.read/write`, `fs.read_public`) are real: `memory.*` is backed by the `module_memory` SQLite table and namespaced to the caller's module id ([src/memory/module-store.ts](src/memory/module-store.ts)); `fs.read_public` is scoped to `data/public/<moduleId>/` with path-containment and a 1 MiB read cap. The **high-risk** primitives (`shell.execute`, `process.spawn`, `net.outbound`, `fs.write_any`, `fs.read_private`, `credentials.read`) remain stubbed so the gate + audit pipeline can be exercised end-to-end without shipping real in-process shell execution until Phase 2 adds subprocess isolation.
+**Capability broker.** Modules never import Node builtins directly. The loader hands each module a typed `ModuleContext` ([src/modules/broker.ts](src/modules/broker.ts), [src/modules/types.ts](src/modules/types.ts)) whose methods each (1) verify the caller's manifest declared the matching permission, (2) gate high-risk permissions through the existing TOTP approval path ([src/security/approval.ts](src/security/approval.ts)), (3) write a decision to the append-only audit log, and (4) only then dispatch the primitive. The **safe** primitives (`log.info`, `time.now`, `memory.read/write`, `fs.read_public`) are real: `memory.*` is backed by the `module_memory` SQLite table and namespaced to the caller's module id ([src/memory/module-store.ts](src/memory/module-store.ts)); `fs.read_public` is scoped to `data/public/<moduleId>/` with path-containment and a 1 MiB read cap. The **high-risk** primitives `shell.execute` and `process.spawn` dispatch real subprocess execution via [src/modules/subprocess.ts](src/modules/subprocess.ts) (bounded timeout, output cap, env allowlist); `fs.read_private` and `fs.write_any` dispatch real file I/O enforced by [src/modules/fs-policy.ts](src/modules/fs-policy.ts) (hard bans on `.env`, source tree, audit log, `p2claw.db`; size caps). `net.outbound` and `credentials.read` remain gate-only stubs — no current module needs raw in-process HTTP or credential access, and real implementations would require URL allowlisting / response-size policy and extreme capability-escalation justification respectively.
 
-**Tool integration.** Module-contributed tools are registered through the existing tools registry with `ownerModuleId` + `requiredPermissions`. [src/tools/registry.ts](src/tools/registry.ts) derives an effective risk (any high-risk permission promotes the tool to `risk: "high"`), runs the one-shot TOTP approval for the whole tool call, and wraps the handler in `runWithGrants(...)` so broker methods inside the handler see those permissions as pre-approved — no double prompting per LLM tool invocation. Broker calls made outside a tool-call context are refused for high-risk permissions in Phase 1.
+**Tool integration.** Module-contributed tools are registered through the existing tools registry with `ownerModuleId` + `requiredPermissions`. [src/tools/registry.ts](src/tools/registry.ts) derives an effective risk (any high-risk permission promotes the tool to `risk: "high"`), runs the one-shot TOTP approval for the whole tool call, and wraps the handler in `runWithGrants(...)` so broker methods inside the handler see those permissions as pre-approved — no double prompting per LLM tool invocation. Broker calls made outside a tool-call context are refused for high-risk permissions. MCP-contributed tools are bridged through [src/mcp/bridge.ts](src/mcp/bridge.ts): the manifest declares permitted tools and their `requires`; Core bridges only those, ignoring any undeclared tools the server reports.
 
-**Audit log.** [src/modules/audit.ts](src/modules/audit.ts) writes one JSONL line per decision to `data/p2claw.audit.log` (size-rotated at 5 MB). Arguments are SHA-256 hashed; only a short redacted summary is logged alongside the decision (`granted`, `denied`, `timeout`, `not_declared`, `error`).
+**Audit log.** [src/modules/audit.ts](src/modules/audit.ts) writes structured JSONL records to `data/p2claw.audit.log` (size-rotated at 5 MB). Record kinds: permission decisions, approval events, subprocess events, file-system events, MCP lifecycle/tool events, and debug invocations. Arguments are SHA-256 hashed; only a short redacted summary is logged alongside the decision.
 
-**Explicit non-goals (Phase 1):** MCP runtime, third-party modules, "allow once / this session / always allow" policy rules, per-action whitelisting matchers, module install UI.
+**Explicit non-goals (current):** third-party module marketplace, "allow once / this session / always allow" policy rules, per-action whitelisting matchers, module install UI, hot-reload.
 
 **Developer diagnostics (dev mode).** `P2CLAW_DEV_MODE` (boolean env var, default `false`) gates an in-tree `dev-tools` module (`com.p2claw.dev-tools`) and a `/debug` slash command in every frontend (Telegram, CLI, HTML). When dev mode is off, the loader skips `src/extensions/dev-tools/` entirely and each frontend treats `/debug` as an unknown command — the feature's existence is not leaked on normal installs. When dev mode is on, the LLM sees four read-style tools (`debug_list_tools`, `debug_inspect_module`, `debug_tail_audit`, `debug_call_tool`) and the developer can type `/debug <subcommand>` to bypass the LLM entirely; both paths go through the existing registry, capability broker, TOTP gate, and audit pipeline. `debug_call_tool` declares no permissions of its own so its effective risk stays `safe`; the **target** tool's risk continues to control whether TOTP is required on re-entry into `executeTool`. Self-recursion and nested debug calls are rejected. Every top-level debug invocation writes an explicit `kind: "debug_invocation"` record into the same JSONL audit file alongside the broker's permission decisions. Dev mode does **not** relax any security gate.
 
@@ -281,20 +299,20 @@ User message
 - In-memory `Map<chatId, Message[]>`
 - Trimmed to last 50 messages per chat
 - `/clear` command resets per-chat
-- Will be backed by SQLite in Level 2
+- Auto-summarization at 40 messages; manual via `/compact`
 
 ### 4.5 Runtime Sandboxing & Isolation Strategy
 
 The agent runs as a standard Node.js process under the user's own account — **no elevated privileges at baseline**.
 
-When Level 4 tools and MCP bridge are implemented, they will enforce isolation:
+Level 4 tools and MCP bridge enforce isolation:
 
 | Mechanism | Status | Details |
 |---|---|---|
-| **MCP servers in separate processes** | Planned (Level 4) | Already aligned with MCP protocol design. Each server runs isolated. |
-| **Child processes with strict timeouts** | Planned (Level 4) | Shell/file tools will use spawned processes with resource limits, timeouts, and no inherited shell environment. |
-| **Audit logging** | Live (Phase 1 module/tool approvals) | Permission decisions and debug invocations are written to the local JSONL audit log at `data/p2claw.audit.log` (append-only, rotated). Broader runtime/tool auditing can expand further as real shell/file/MCP surfaces land. |
-| **No in-place binary or running-file overwrites** | Hard rule (now) | The agent never modifies its own source at runtime. |
+| **MCP servers in separate processes** | Live (Level 4) | Each MCP server runs as a supervised child process with startup timeout, crash-restart with backoff, and call-level timeouts. Permissions come from the manifest, not the server. |
+| **Child processes with strict timeouts** | Live (Level 4) | `shell.execute` and `process.spawn` use `child_process.spawn` with 10s default / 60s max timeout, 64 KiB output caps, and an allowlisted environment (no credential leak to children). |
+| **Audit logging** | Live (full coverage) | Permission decisions, subprocess events, file-system events, MCP lifecycle/tool events, approval outcomes, and debug invocations are all written to the local JSONL audit log at `data/p2claw.audit.log` (append-only, rotated at 5 MB). |
+| **No in-place binary or running-file overwrites** | Hard rule (now) | The agent never modifies its own source at runtime. File-system hard bans prevent writes to `src/`, `dist/`, `scripts/`, `.env`, `p2claw.db`, and the audit log. |
 
 > **Future considerations (not committed):** Docker/rootless container isolation for high-risk tools, and git-based diff-reviewed workflows for any self-modification capability. These would only be explored if a concrete Level 4+ use case demands them. We don't add complexity speculatively.
 
@@ -346,13 +364,13 @@ Named after the elephant AI mascot of the Player2 platform.
 - [x] Voice message output (TTS via Player2 `/v1/tts/speak`)
 - [x] Voice preference settings (per-chat persistence in SQLite + `DEFAULT_VOICE_MODE` in `.env`)
 
-### Level 4 — Tools & MCP
-- [x] **Phase 1 (foundation):** RFC 6238 TOTP in `.env` (`TOTP_SECRET_BASE32`), short-lived approval challenges with payload binding, Telegram `APPROVE <challengeId> <6-digit-code>` handled in `bot.ts` before the agent (codes never reach the LLM). Stub tool `high_risk_demo` exercises the high-risk path; real shell/fs/MCP remain below.
-- [ ] Shell command tool (with confirmation for dangerous ops)
-- [ ] File system tool (read/write/list, sandboxed)
-- [ ] MCP bridge (connect external MCP servers)
+### Level 4 — Tools & MCP ✅
+- [x] **Phase 1 (foundation):** RFC 6238 TOTP in `.env` (`TOTP_SECRET_BASE32`), short-lived approval challenges with payload binding, Telegram `APPROVE <challengeId> <6-digit-code>` handled in `bot.ts` before the agent (codes never reach the LLM). Stub tool `high_risk_demo` exercises the high-risk path.
+- [x] Shell command tool (real subprocess execution via `child_process.spawn` with 10s default / 60s max timeout, 64 KiB output caps, env allowlist, TOTP-gated approval, subprocess audit events — see `src/modules/subprocess.ts`, `src/modules/broker.ts`.)
+- [x] File system tool (`file_read` / `file_write` / `file_list` sandboxed to `data/workspace/`; hard bans on `.env`, source tree, audit log, `p2claw.db`; `file_write` is high-risk / TOTP-gated; broker `fs.read_private` / `fs.write_any` also real with policy enforcement — see `src/modules/fs-policy.ts`.)
+- [x] MCP bridge (Core-owned MCP stdio host with startup timeout, crash-restart with backoff, call-level timeouts, protocol mismatch detection; manifest-declared tools bridged to registry with manifest-sourced permissions; `mcp_lifecycle` and `mcp_event` audit records — see `src/mcp/`.)
 - [x] Tool permission system (full manifest / policy surface — fixed Core-owned permission catalog, strict manifest validation, broker-enforced permission checks, effective risk derivation, one-shot TOTP approval, append-only audit, and real subprocess/fs policy surfaces are in place. `net.outbound` and `credentials.read` remain gate-only stubs until a concrete need justifies their dispatch design.)
-- [ ] Out-of-band 2FA beyond Phase 1 (e.g., local terminal or HTML prompt for approvals without Telegram)
+- [x] Out-of-band 2FA (CLI terminal prompt and HTML approval panel + `/api/approve` endpoint; same TOTP code-entry flow across all frontends; non-terminal bad-code retry within 120s TTL; codes never enter LLM context — see decision log 2026-04-19.)
 - [x] Local HTML GUI (loopback HTTP, chat + config page) — `UI_MODE=html`; see §4.6
 - [x] Modular Frontends (CLI/HTML-only installs are first-class; agent core single-sourced via `createAgentCore` for Telegram, CLI, and HTML; shared `/debug` tail parsing; CLI parity commands; HTML parity APIs + richer status — see decision log 2026-04-19.)
 
@@ -417,6 +435,11 @@ Significant design decisions, recorded so future-us (or future AI) knows the **w
 | 2026-04-17 | Dev-tools module + `/debug` command, env-gated (§4.7) | Adds deterministic tool invocation for both LLM-side diagnostics (`debug_call_tool`) and frontend-side diagnostics (`/debug call`) without loosening the security model. Gated by `P2CLAW_DEV_MODE`: loader skips the `src/extensions/dev-tools/` folder and every frontend treats `/debug` as unknown command when off, so normal installs carry zero extra surface. `debug_call_tool` declares no permissions itself — the target tool's effective risk still controls TOTP — and self-recursion / nested debug calls are rejected. A new `kind: "debug_invocation"` audit record sits alongside the broker's permission decisions in the same JSONL file, resolved through the now-exported `resolveAuditLogPath()` helper so the tail path never drifts from the writer path. |
 | 2026-04-18 | Level 4 Part D complete — keep policy minimal and Core-owned | The Level 4 permission system is complete once Core owns the fixed permission catalog, manifest validation, broker semantics, one-shot TOTP approval, effective tool-risk derivation, and append-only audit, with real subprocess and file-system dispatch behind those gates. No durable per-tool or per-module allow/deny state was added: session or permanent trust shortcuts would create a prompt-injection escalation path and weaken the explicit approval model. `net.outbound` remains a gate-only stub because no current Level 4 module needs raw in-process HTTP and a real implementation would need URL allowlisting, redirect handling, and response-size policy that are not justified yet; MCP stays the preferred path for network-heavy integrations. `credentials.read` also remains a gate-only stub because exposing the live TOTP secret, Telegram bot token, or Player2 key to module code would be an extreme capability escalation without a concrete Level 4 use case. |
 | 2026-04-19 | Level 4 Part F — modular frontends / parity | Telegram text and voice handlers now call `createAgentCore` (`src/ui/core.ts`) so the agent loop stays single-sourced; `parseDebugTail` centralises `/debug` tail parsing; CLI gains `/status`, `/profile`, `/totp_enroll_help`; loopback HTML gains parity APIs (`/api/memories`, `/api/clear`, `/api/compact`, expanded `/api/status`) with `assertTrustedOrigin` on mutating/list-memory routes. Core remains the trust boundary (TOTP, registry, audit unchanged). |
+| 2026-04-19 | Level 4 Part A — real shell execution surface | `shell.execute` and `process.spawn` broker primitives dispatch real subprocess execution via `src/modules/subprocess.ts`. Policy: 10s default / 60s max timeout, 64 KiB stdout/stderr caps with truncation flags, allowlisted environment (no credential leak), deterministic cwd. `subprocess_event` audit records log outcome class (success, nonzero_exit, timeout, spawn_error). Approval summary redacts sensitive-looking arguments. |
+| 2026-04-19 | Level 4 Part B — real file system surface | Three built-in tools (`file_read`, `file_write`, `file_list`) sandboxed to `data/workspace/`. `file_write` is high-risk / TOTP-gated. Core file policy (`src/modules/fs-policy.ts`) enforces hard bans on `.env` family, source tree, audit log, and `p2claw.db` for writes; `.env` family for reads. Broker `fs.readPrivate` (4 MiB cap) and `fs.writeAny` (10 MiB cap) are real with policy enforcement and `fs_event` audit records. Path summaries in audit never expose absolute paths. |
+| 2026-04-19 | Level 4 Part C — MCP bridge runtime | `src/mcp/` implements a Core-owned MCP stdio host (`McpServerHost`) with startup timeout, crash-restart with exponential backoff, call-level timeouts, and protocol mismatch detection. `McpStdioClient` wraps the official `@modelcontextprotocol/sdk`. `registerMcpTools()` bridges only manifest-declared tools (undeclared server tools are ignored by Core). Manifest validation now accepts `runtime: "mcp"` with a validated `mcp` config block; command shell-metacharacter injection and env secret-passthrough are banned. `mcp_lifecycle` and `mcp_event` audit records cover startup, crashes, restarts, tool calls (success/timeout/disconnected/error). First-party `mcp-echo` fixture gated by `mcpVerify` flag — never loaded in production. |
+| 2026-04-19 | Level 4 Part E — approval UX outside Telegram | CLI prompts for TOTP code in the terminal; HTML UI shows an approval panel and posts to `/api/approve`. All frontends share the same `createChallenge` / `waitForApproval` / `tryApproveWithTotp` / `cancelPendingForChat` primitives from `src/security/approval.ts`. Bad codes are non-terminal (user can retry within 120s TTL). TOTP codes and approval prompts never enter LLM context or chat history in any frontend. |
+| 2026-04-19 | Level 4 complete — closeout review | All 8 Level 4 roadmap bullets verified complete against code. 90+ automated checks pass (`scripts/verify-modules.ts`). TypeScript build clean. Documentation aligned. `net.outbound` and `credentials.read` remain intentional gate-only stubs. |
 
 ---
 
