@@ -146,6 +146,19 @@ function createSchema(db: Database): void {
     );
   `);
 
+  // Per-module settings store. Values are JSON-encoded strings so booleans
+  // and numbers round-trip correctly. Core validates against the module's
+  // SettingFieldDescriptor schema before writing. Part H.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS module_settings (
+      module_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (module_id, key)
+    );
+  `);
+
   log.info("Core database schema applied");
 }
 

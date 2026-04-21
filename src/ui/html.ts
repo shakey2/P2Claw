@@ -8,6 +8,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { Config } from "../config.js";
 import type { Frontend } from "./frontend.js";
@@ -27,6 +28,22 @@ import {
 } from "../security/approval.js";
 import { requestGracefulShutdown } from "../graceful-shutdown.js";
 import { handleDebugCommand } from "./debug.js";
+import {
+  getLoadedModule,
+  getNavTabs,
+  getModulesWithSettings,
+  getRegisteredTab,
+} from "../modules/runtime-index.js";
+import {
+  readAllModuleSettings,
+  writeModuleSetting,
+} from "../modules/settings-store.js";
+import {
+  validateSettingValue,
+  coerceSettingValue,
+} from "../modules/settings-schema.js";
+import { writeSettingsEvent } from "../modules/audit.js";
+import type { TabContentBlock } from "../modules/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "html", "public");
@@ -235,6 +252,200 @@ export function createHtmlFrontend(config: Config): Frontend {
   const core = createAgentCore(config);
   const sessionId = config.memoryScopeId;
   let server: http.Server | null = null;
+
+  // ── Part H: HTML rendering helpers for module pages ─────────
+
+  /** Escapes a string for safe HTML output (prevents XSS). */
+  function htmlEscape(s: string): string {
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  /** Validates a link href — only loopback origins or relative paths allowed. */
+  function isSafeHref(href: string): boolean {
+    if (href.startsWith("/")) return true;
+    try {
+      const u = new URL(href);
+      const host = u.hostname.toLowerCase();
+      return (
+        u.protocol === "http:" &&
+        (host === "127.0.0.1" || host === "localhost" || host === "::1")
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** Renders a single TabContentBlock to safe HTML. */
+  function renderBlock(block: TabContentBlock): string {
+    switch (block.kind) {
+      case "heading": {
+        const tag = `h${Math.min(Math.max(block.level, 1), 3)}`;
+        return `<${tag}>${htmlEscape(block.text)}</${tag}>`;
+      }
+      case "paragraph":
+        return `<p>${htmlEscape(block.text)}</p>`;
+      case "pre":
+        return `<pre><code>${htmlEscape(block.text)}</code></pre>`;
+      case "kv-table": {
+        const rows = block.rows
+          .map(
+            (r) =>
+              `<tr><td class="kv-key">${htmlEscape(r.key)}</td><td>${htmlEscape(r.value)}</td></tr>`
+          )
+          .join("");
+        return `<table class="kv-table"><tbody>${rows}</tbody></table>`;
+      }
+      case "status": {
+        const colors: Record<string, string> = {
+          ok: "#34d399",
+          warning: "#fbbf24",
+          error: "#f87171",
+        };
+        const color = colors[block.value] ?? "#8b9aab";
+        const detail = block.detail ? ` — ${htmlEscape(block.detail)}` : "";
+        return `<p><span style="color:${color};font-weight:600">${htmlEscape(block.label)}: ${htmlEscape(block.value)}</span>${detail}</p>`;
+      }
+      case "settings-form":
+        return `<div class="embedded-settings" data-module-id="${htmlEscape(block.moduleId)}">
+          <p><a href="/modules/${encodeURIComponent(block.moduleId)}/settings">Open settings →</a></p>
+        </div>`;
+      default:
+        return "";
+    }
+  }
+
+  /** Wraps rendered content in the standard page shell. */
+  function pageShell(title: string, subtitle: string, bodyHtml: string): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${htmlEscape(title)} · P2 Claw</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+  <style>
+    .kv-table { width: 100%; max-width: 40rem; border-collapse: collapse; margin: 0.75rem 0; }
+    .kv-table td { padding: 0.35rem 0.65rem; border-bottom: 1px solid #243040; }
+    .kv-table .kv-key { color: #8b9aab; font-weight: 600; white-space: nowrap; width: 1%; }
+    .mod-nav { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+    .mod-nav a { color: #6ec8ff; }
+    pre { background: #151c24; padding: 0.75rem; border-radius: 6px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <h1>${htmlEscape(title)}</h1>
+    <p class="sub"><span class="product-name">P2 Claw</span> · ${htmlEscape(subtitle)}</p>
+    <nav class="nav-row">
+      <a href="/">Chat</a>
+      <a href="/config">Config</a>
+    </nav>
+  </header>
+  <main>
+    ${bodyHtml}
+  </main>
+</body>
+</html>`;
+  }
+
+  /** Renders a module settings page (auto-generated from schema). */
+  function renderModuleSettingsPage(moduleId: string, moduleName: string, _config: Config): string {
+    const body = `
+    <div id="settingsRoot"></div>
+    <p id="settingsMsg" class="msg" role="status" aria-live="polite"></p>
+    <script>
+    (function() {
+      var root = document.getElementById("settingsRoot");
+      var msgEl = document.getElementById("settingsMsg");
+      var moduleId = ${JSON.stringify(moduleId)};
+
+      function esc(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+      fetch("/api/module-settings/" + encodeURIComponent(moduleId))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) { root.textContent = data.error; return; }
+          var fields = data.fields;
+          var html = '<form id="msForm" class="setup">';
+          for (var i = 0; i < fields.length; i++) {
+            var f = fields[i];
+            html += '<label>' + esc(f.label);
+            if (f.type === "boolean") {
+              html += '<select id="ms_' + esc(f.key) + '" data-key="' + esc(f.key) + '" data-type="boolean">';
+              html += '<option value="true"' + (f.value === true ? ' selected' : '') + '>true</option>';
+              html += '<option value="false"' + (f.value !== true ? ' selected' : '') + '>false</option>';
+              html += '</select>';
+            } else if (f.type === "select") {
+              html += '<select id="ms_' + esc(f.key) + '" data-key="' + esc(f.key) + '" data-type="select">';
+              var opts = f.options || [];
+              for (var j = 0; j < opts.length; j++) {
+                html += '<option value="' + esc(opts[j]) + '"' + (String(f.value) === opts[j] ? ' selected' : '') + '>' + esc(opts[j]) + '</option>';
+              }
+              html += '</select>';
+            } else if (f.type === "number") {
+              html += '<input id="ms_' + esc(f.key) + '" type="number" data-key="' + esc(f.key) + '" data-type="number"';
+              if (f.min !== undefined) html += ' min="' + f.min + '"';
+              if (f.max !== undefined) html += ' max="' + f.max + '"';
+              html += ' value="' + esc(String(f.value)) + '" />';
+            } else {
+              html += '<input id="ms_' + esc(f.key) + '" type="' + (f.sensitive ? 'password' : 'text') + '" data-key="' + esc(f.key) + '" data-type="string"';
+              if (f.maxLength) html += ' maxlength="' + f.maxLength + '"';
+              html += ' value="' + esc(String(f.value)) + '"';
+              if (f.sensitive && f.hasValue) html += ' placeholder="(set - hidden)"';
+              html += ' />';
+            }
+            html += '</label>';
+            if (f.description) html += '<p class="hint">' + esc(f.description) + '</p>';
+          }
+          html += '<button type="submit">Save</button></form>';
+          root.innerHTML = html;
+          document.getElementById("msForm").addEventListener("submit", function(e) {
+            e.preventDefault();
+            var vals = {};
+            var inputs = root.querySelectorAll("[data-key]");
+            for (var k = 0; k < inputs.length; k++) {
+              var el = inputs[k];
+              var key = el.getAttribute("data-key");
+              var typ = el.getAttribute("data-type");
+              var v = el.value;
+              if (typ === "number") v = Number(v);
+              else if (typ === "boolean") v = v === "true";
+              if (el.type === "password" && v === "") continue;
+              vals[key] = v;
+            }
+            fetch("/api/module-settings/" + encodeURIComponent(moduleId), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ values: vals })
+            }).then(function(r) { return r.json(); })
+              .then(function(j) {
+                if (j.ok) { msgEl.textContent = "Saved."; msgEl.style.color = "#a7f3d0"; }
+                else { msgEl.textContent = j.error || "Failed."; msgEl.style.color = "#fecaca"; }
+              })
+              .catch(function() { msgEl.textContent = "Request failed."; msgEl.style.color = "#fecaca"; });
+          });
+        })
+        .catch(function(err) { root.textContent = "Failed to load settings: " + err.message; });
+    })();
+    </script>`;
+    return pageShell(`${moduleName} Settings`, `module settings`, body);
+  }
+
+  /** Renders a module tab page from structured content blocks. */
+  function renderTabPage(
+    title: string,
+    moduleName: string,
+    blocks: readonly TabContentBlock[],
+    _config: Config
+  ): string {
+    const body = blocks.map((b) => renderBlock(b)).join("\n    ");
+    return pageShell(title, `${moduleName}`, body);
+  }
 
   const handler = async (
     req: http.IncomingMessage,
@@ -460,6 +671,151 @@ export function createHtmlFrontend(config: Config): Frontend {
         if (!assertTrustedOrigin(req, res, config)) return;
         json(res, 200, { ok: true });
         requestGracefulShutdown();
+        return;
+      }
+
+      // ── Part H: Module settings API ─────────────────────────────
+
+      // GET /api/module-settings/:moduleId — returns schema + current values
+      const settingsGetMatch = pathname.match(/^\/api\/module-settings\/([^/]+)$/);
+      if (settingsGetMatch && req.method === "GET") {
+        if (!assertTrustedOrigin(req, res, config)) return;
+        const moduleId = decodeURIComponent(settingsGetMatch[1]!);
+        const mod = getLoadedModule(moduleId);
+        if (!mod || mod.settings.length === 0) {
+          json(res, 404, { error: `module "${moduleId}" not found or has no settings` });
+          return;
+        }
+        const stored = readAllModuleSettings(moduleId);
+        const fields = mod.settings.map((f) => {
+          const raw = stored.get(f.key);
+          let value: string | number | boolean = f.default;
+          if (raw !== undefined) {
+            try { value = JSON.parse(raw); } catch { value = raw; }
+            value = coerceSettingValue(f, String(value));
+          }
+          return {
+            ...f,
+            value: f.sensitive ? "" : value,
+            hasValue: raw !== undefined,
+          };
+        });
+        json(res, 200, { moduleId, moduleName: mod.name, fields });
+        return;
+      }
+
+      // POST /api/module-settings/:moduleId — write values
+      const settingsPostMatch = pathname.match(/^\/api\/module-settings\/([^/]+)$/);
+      if (settingsPostMatch && req.method === "POST") {
+        if (!assertTrustedOrigin(req, res, config)) return;
+        const moduleId = decodeURIComponent(settingsPostMatch[1]!);
+        const mod = getLoadedModule(moduleId);
+        if (!mod || mod.settings.length === 0) {
+          json(res, 404, { error: `module "${moduleId}" not found or has no settings` });
+          return;
+        }
+        const body = await parseJsonBody(req);
+        const values = body.values as Record<string, unknown> | undefined;
+        if (!values || typeof values !== "object") {
+          json(res, 400, { error: "body.values must be an object" });
+          return;
+        }
+        const errors: Record<string, string> = {};
+        const writes: Array<{ key: string; value: string | number | boolean; sensitive: boolean }> = [];
+        for (const field of mod.settings) {
+          if (!(field.key in values)) continue;
+          const val = values[field.key];
+          const result = validateSettingValue(field, val);
+          if (!result.ok) {
+            errors[field.key] = result.error;
+            writeSettingsEvent({
+              kind: "settings_event",
+              moduleId,
+              operation: "write",
+              settingKey: field.key,
+              outcome: "validation_error",
+              sensitive: field.sensitive,
+              error: result.error,
+            });
+            continue;
+          }
+          writes.push({ key: field.key, value: val as string | number | boolean, sensitive: field.sensitive });
+        }
+        if (Object.keys(errors).length > 0) {
+          json(res, 400, { error: "validation_error", fields: errors });
+          return;
+        }
+        // TODO: TOTP gate for sensitive fields (reuse existing challenge flow)
+        // For now, write all values directly.
+        for (const w of writes) {
+          writeModuleSetting(moduleId, w.key, JSON.stringify(w.value));
+          writeSettingsEvent({
+            kind: "settings_event",
+            moduleId,
+            operation: "write",
+            settingKey: w.key,
+            valueHash: createHash("sha256").update(JSON.stringify(w.value)).digest("hex"),
+            outcome: "success",
+            sensitive: w.sensitive,
+          });
+        }
+        json(res, 200, { ok: true, written: writes.length });
+        return;
+      }
+
+      // GET /api/nav — returns navigation data including module tabs
+      if (pathname === "/api/nav" && req.method === "GET") {
+        json(res, 200, {
+          tabs: getNavTabs(),
+          modulesWithSettings: getModulesWithSettings(),
+        });
+        return;
+      }
+
+      // ── Part H: Module tab page routes ──────────────────────────
+
+      const tabMatch = pathname.match(/^\/modules\/([^/]+)\/([^/]+)$/);
+      if (tabMatch && req.method === "GET") {
+        const moduleId = decodeURIComponent(tabMatch[1]!);
+        const tabId = decodeURIComponent(tabMatch[2]!);
+
+        // Auto-settings tab
+        if (tabId === "settings") {
+          const mod = getLoadedModule(moduleId);
+          if (!mod || mod.settings.length === 0) {
+            res.writeHead(404).end("Not found");
+            return;
+          }
+          const html = renderModuleSettingsPage(moduleId, mod.name, config);
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(html);
+          return;
+        }
+
+        // Contributed tab
+        const tab = getRegisteredTab(moduleId, tabId);
+        if (!tab) {
+          res.writeHead(404).end("Not found");
+          return;
+        }
+        try {
+          const descriptor = await Promise.race([
+            tab.renderContent(),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("Tab render timeout")), 5000)
+            ),
+          ]);
+          const html = renderTabPage(tab.title, tab.moduleName, descriptor.blocks, config);
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(html);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const html = renderTabPage(tab.title, tab.moduleName, [
+            { kind: "status", label: "Error", value: "error", detail: msg },
+          ], config);
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(html);
+        }
         return;
       }
 

@@ -20,13 +20,18 @@ import {
   type ModuleManifest,
 } from "./manifest.js";
 import { createBroker, type BrokerCoreServices } from "./broker.js";
-import type { Module, ModuleTool } from "./types.js";
+import type { Module, ModuleTool, SettingFieldDescriptor, ModuleTab } from "./types.js";
 import { registerModuleTool } from "../tools/registry.js";
 import type { ToolDefinition } from "../tools/tool-types.js";
-import { registerLoadedModule, summaryFromManifest } from "./runtime-index.js";
+import {
+  registerLoadedModule,
+  summaryFromManifest,
+  registerModuleTab,
+} from "./runtime-index.js";
 import { registerMcpTools } from "../mcp/bridge.js";
 import { McpServerHost } from "../mcp/host.js";
 import { registerMcpHost, stopAllMcpHosts } from "../mcp/registry.js";
+import { seedSettingDefaults } from "./settings-store.js";
 
 /**
  * The in-tree `dev-tools` module is only scanned when the caller opts in
@@ -237,8 +242,21 @@ export async function loadModules(
         registeredTools.push(tool);
       };
 
+      // Part H: settings contribution callback
+      // Use an object wrapper so TypeScript doesn't narrow the `let` through the closure.
+      const settingsBox: { value: SettingFieldDescriptor[] | null } = { value: null };
+      const contributeSettings = (fields: SettingFieldDescriptor[]): void => {
+        settingsBox.value = fields;
+      };
+
+      // Part H: tab contribution callback
+      const contributedTabs: ModuleTab[] = [];
+      const contributeTab = (tab: ModuleTab): void => {
+        contributedTabs.push(tab);
+      };
+
       try {
-        await mod.register({ ctx, contributeTool });
+        await mod.register({ ctx, contributeTool, contributeSettings, contributeTab });
       } catch (err) {
         const { code, reason } = importErrorMessage(err);
         result.rejected.push({ folder, code, reason });
@@ -261,6 +279,36 @@ export async function loadModules(
         continue;
       }
 
+      // Part H post-validation: if module contributed settings, keys must match
+      // the manifest declaration exactly.
+      if (settingsBox.value !== null) {
+        const manifestKeys = new Set(manifest.settings.map((s) => s.key));
+        const contribKeys = new Set(settingsBox.value.map((s) => s.key));
+        const extraKeys = [...contribKeys].filter((k) => !manifestKeys.has(k));
+        if (extraKeys.length > 0) {
+          result.rejected.push({
+            folder,
+            code: "ERR_SETTINGS_MISMATCH",
+            reason: `module "${manifest.id}" contributed settings not declared in manifest: [${extraKeys.join(", ")}]`,
+          });
+          continue;
+        }
+      }
+
+      // Part H post-validation: contributed tabs must match manifest tab ids.
+      if (contributedTabs.length > 0) {
+        const manifestTabIds = new Set(manifest.tabs.map((t) => t.id));
+        const extraTabs = contributedTabs.filter((t) => !manifestTabIds.has(t.id));
+        if (extraTabs.length > 0) {
+          result.rejected.push({
+            folder,
+            code: "ERR_TAB_NOT_IN_MANIFEST",
+            reason: `module "${manifest.id}" contributed tabs not declared in manifest: [${extraTabs.map((t) => t.id).join(", ")}]`,
+          });
+          continue;
+        }
+      }
+
       let toolsRegistered = 0;
       let rejected = false;
       for (const t of registeredTools) {
@@ -276,6 +324,21 @@ export async function loadModules(
         }
       }
       if (rejected) continue;
+
+      // Part H: seed defaults for declared settings (won't overwrite existing values)
+      if (manifest.settings.length > 0) {
+        try {
+          seedSettingDefaults(manifest.id, manifest.settings);
+        } catch {
+          // Non-fatal: settings defaults may fail before DB is initialized
+          // (e.g. during verify harness runs). Module still loads.
+        }
+      }
+
+      // Part H: register contributed tabs in the runtime index
+      for (const tab of contributedTabs) {
+        registerModuleTab(manifest.id, manifest.name, tab);
+      }
 
       // Module fully accepted — publish a runtime-index snapshot so the
       // dev-tools surface (debug_inspect_module / /debug modules) can answer

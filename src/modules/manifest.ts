@@ -33,6 +33,8 @@ import {
   isKnownPermission,
   type PermissionId,
 } from "./permissions.js";
+import { validateSettingsSchema } from "./settings-schema.js";
+import type { SettingFieldDescriptor } from "./types.js";
 
 export type ModuleRuntime = "inprocess" | "mcp";
 
@@ -51,6 +53,18 @@ export interface ManifestTool {
   requires: readonly PermissionId[];
 }
 
+/** Tab declaration in manifest.json (Part H). */
+export interface ManifestTab {
+  id: string;
+  title: string;
+  order: number;
+}
+
+/** Maximum number of tabs a single module may declare. */
+export const MAX_MANIFEST_TABS = 5;
+
+const TAB_ID_REGEX = /^[a-z][a-z0-9_-]{0,31}$/;
+
 export interface ModuleManifest {
   id: string;
   name: string;
@@ -62,6 +76,10 @@ export interface ModuleManifest {
   entry: string;
   permissions: readonly PermissionId[];
   tools: readonly ManifestTool[];
+  /** Part H: validated settings field descriptors (empty array if not declared). */
+  settings: readonly SettingFieldDescriptor[];
+  /** Part H: validated tab declarations (empty array if not declared). */
+  tabs: readonly ManifestTab[];
 }
 
 /**
@@ -396,6 +414,70 @@ export function validateManifest(
     });
   }
 
+  // ── Part H: settings schema validation ──────────────────────────
+  let settings: SettingFieldDescriptor[] = [];
+  if (raw.settings !== undefined) {
+    settings = validateSettingsSchema(raw.settings, id);
+  }
+
+  // ── Part H: tabs validation ────────────────────────────────────
+  const tabs: ManifestTab[] = [];
+  if (raw.tabs !== undefined) {
+    if (!Array.isArray(raw.tabs)) {
+      fail("ERR_MANIFEST_TABS", "manifest.tabs must be an array");
+    }
+    if (raw.tabs.length > MAX_MANIFEST_TABS) {
+      fail(
+        "ERR_MANIFEST_TABS",
+        `manifest.tabs exceeds max ${MAX_MANIFEST_TABS} entries`
+      );
+    }
+    const tabIds = new Set<string>();
+    for (let i = 0; i < raw.tabs.length; i++) {
+      const t = raw.tabs[i] as Record<string, unknown>;
+      if (typeof t !== "object" || t === null || Array.isArray(t)) {
+        fail("ERR_MANIFEST_TABS", `manifest.tabs[${i}] must be an object`);
+      }
+      const tabId = t.id;
+      if (typeof tabId !== "string" || !TAB_ID_REGEX.test(tabId)) {
+        fail(
+          "ERR_MANIFEST_TABS",
+          `manifest.tabs[${i}].id must match ${TAB_ID_REGEX}`
+        );
+      }
+      if (tabIds.has(tabId)) {
+        fail("ERR_MANIFEST_TABS", `duplicate tab id "${tabId}"`);
+      }
+      tabIds.add(tabId);
+
+      const tabTitle = t.title;
+      if (typeof tabTitle !== "string" || tabTitle.trim().length === 0) {
+        fail(
+          "ERR_MANIFEST_TABS",
+          `manifest.tabs[${i}].title must be a non-empty string`
+        );
+      }
+
+      const tabOrder = t.order;
+      if (
+        typeof tabOrder !== "number" ||
+        !Number.isFinite(tabOrder) ||
+        tabOrder < 0
+      ) {
+        fail(
+          "ERR_MANIFEST_TABS",
+          `manifest.tabs[${i}].order must be a non-negative number`
+        );
+      }
+
+      tabs.push({
+        id: tabId,
+        title: (tabTitle as string).trim(),
+        order: Math.floor(tabOrder as number),
+      });
+    }
+  }
+
   return {
     id,
     name,
@@ -407,6 +489,8 @@ export function validateManifest(
     entry,
     permissions: Array.from(permSet) as PermissionId[],
     tools,
+    settings,
+    tabs,
   };
 }
 

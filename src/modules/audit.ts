@@ -399,3 +399,47 @@ export function writeFsEvent(entry: FsEventEntry): void {
     /* never crash on audit failure */
   }
 }
+
+// ── Module settings events (Part H) ─────────────────────────────
+//
+// Records module settings reads and writes so operators can trace
+// who changed what and when. Sensitive field values are hashed.
+
+export type SettingsOutcome =
+  | "success"
+  | "validation_error"
+  | "not_found"
+  | "totp_required"
+  | "error";
+
+export interface SettingsEventEntry {
+  kind: "settings_event";
+  moduleId: string;
+  operation: "read" | "write";
+  settingKey: string;
+  /** Only present for writes — SHA-256 hash of the new value. */
+  valueHash?: string;
+  outcome: SettingsOutcome;
+  sensitive: boolean;
+  error?: string;
+}
+
+export function writeSettingsEvent(entry: SettingsEventEntry): void {
+  const path = resolveAuditLogPath();
+  try {
+    const dir = dirname(path);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    rotateIfNeeded(path);
+    const line =
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        ...entry,
+      }) + "\n";
+    appendFileSync(path, line, "utf-8");
+  } catch {
+    /* never crash on audit failure */
+  }
+}
+

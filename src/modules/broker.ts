@@ -30,6 +30,7 @@ import {
 } from "./permissions.js";
 import {
   writeAudit,
+  writeSettingsEvent,
   hashArgs,
   summariseArgs,
   writeFsEvent,
@@ -100,6 +101,14 @@ export interface BrokerCoreServices {
   memory?: {
     read(moduleId: string, key: string): Promise<string | null>;
     write(moduleId: string, key: string, value: string): Promise<void>;
+  };
+  /**
+   * Part H: Provider for module-scoped settings. If omitted, settings.*
+   * operations return defaults / no-ops.
+   */
+  settings?: {
+    read(moduleId: string, key: string): Promise<string | number | boolean | null>;
+    write(moduleId: string, key: string, value: string | number | boolean): Promise<void>;
   };
 }
 
@@ -256,6 +265,26 @@ export function createBroker(
         checkGate("memory.write", { key });
         if (!services.memory) return;
         return services.memory.write(manifest.id, key, value);
+      },
+    },
+
+    settings: {
+      async read(key: string): Promise<string | number | boolean | null> {
+        if (!services.settings) return null;
+        return services.settings.read(manifest.id, key);
+      },
+      async write(key: string, value: string | number | boolean): Promise<void> {
+        if (!services.settings) return;
+        writeSettingsEvent({
+          kind: "settings_event",
+          moduleId: manifest.id,
+          operation: "write",
+          settingKey: key,
+          valueHash: hashArgs(value),
+          outcome: "success",
+          sensitive: false, // sensitivity check done at the API layer
+        });
+        return services.settings.write(manifest.id, key, value);
       },
     },
 
