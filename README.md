@@ -12,6 +12,13 @@ A lean, secure personal AI agent powered by [Player2](https://player2.game). Def
 
 1. **Player2 App** — Download from [player2.game](https://player2.game) and keep it running. It must be available at `http://127.0.0.1:4315`.
 2. **Node.js** — v18 or later.
+   - **Windows**: Download the "LTS" installer from [nodejs.org](https://nodejs.org/).
+   - **macOS/Linux**: Use [nvm](https://github.com/nvm-sh/nvm) (Node Version Manager):
+     ```bash
+     curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+     nvm install --lts
+     ```
+   - Verify by running `node -v` and `npm -v` in your terminal.
 
 ### Install & Run
 
