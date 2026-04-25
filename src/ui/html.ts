@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import type { Socket } from "node:net";
 import type { Config } from "../config.js";
 import type { Frontend } from "./frontend.js";
 import { createAgentCore } from "./core.js";
@@ -210,8 +211,16 @@ function sendFile(res: http.ServerResponse, rel: string): void {
   });
 }
 
-function json(res: http.ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+function json(
+  res: http.ServerResponse,
+  status: number,
+  body: unknown,
+  headers: http.OutgoingHttpHeaders = {}
+): void {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    ...headers,
+  });
   res.end(JSON.stringify(body));
 }
 
@@ -252,6 +261,7 @@ export function createHtmlFrontend(config: Config): Frontend {
   const core = createAgentCore(config);
   const sessionId = config.memoryScopeId;
   let server: http.Server | null = null;
+  const sockets = new Set<Socket>();
 
   // ── Part H: HTML rendering helpers for module pages ─────────
 
@@ -669,8 +679,10 @@ export function createHtmlFrontend(config: Config): Frontend {
       // Loopback-only: same trust as local Telegram / CLI shutdown — not exposed remotely.
       if (pathname === "/api/shutdown" && req.method === "POST") {
         if (!assertTrustedOrigin(req, res, config)) return;
-        json(res, 200, { ok: true });
-        requestGracefulShutdown();
+        res.once("finish", () => {
+          setImmediate(requestGracefulShutdown);
+        });
+        json(res, 200, { ok: true }, { Connection: "close" });
         return;
       }
 
@@ -854,6 +866,12 @@ export function createHtmlFrontend(config: Config): Frontend {
       server = http.createServer((req, res) => {
         void handler(req, res);
       });
+      server.on("connection", (socket) => {
+        sockets.add(socket);
+        socket.on("close", () => {
+          sockets.delete(socket);
+        });
+      });
       await new Promise<void>((resolve, reject) => {
         server!.listen(config.htmlBindPort, config.htmlBindHost, () => resolve());
         server!.on("error", reject);
@@ -870,10 +888,21 @@ export function createHtmlFrontend(config: Config): Frontend {
     },
     stop: async () => {
       if (server) {
-        await new Promise<void>((resolve) => {
-          server!.close(() => resolve());
-        });
+        const closingServer = server;
         server = null;
+        await new Promise<void>((resolve) => {
+          const forceClose = setTimeout(() => {
+            for (const socket of sockets) {
+              socket.destroy();
+            }
+          }, 500);
+          closingServer.close(() => {
+            clearTimeout(forceClose);
+            sockets.clear();
+            resolve();
+          });
+          closingServer.closeIdleConnections?.();
+        });
       }
     },
   };
