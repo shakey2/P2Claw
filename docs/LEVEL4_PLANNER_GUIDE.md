@@ -67,12 +67,12 @@ A planner working on any Level 4 part should read these first:
 
 1. `DESIGN.md` sections `2.1`, `2.7`, `2.8`, `4.5`, `4.7`, and the Level 4 roadmap in `6`
 2. `README.md` developer architecture / project structure section
-3. `src/modules/permissions.ts`
-4. `src/modules/manifest.ts`
-5. `src/modules/broker.ts`
+3. `src/core/modules/permissions.ts`
+4. `src/core/modules/manifest.ts`
+5. `src/core/modules/broker.ts`
 6. `src/tools/registry.ts`
 7. `src/security/approval.ts`
-8. `src/modules/audit.ts`
+8. `src/core/modules/audit.ts`
 9. `scripts/verify-modules.ts`
 
 These define the boundary that the remaining work must respect.
@@ -106,13 +106,13 @@ contained implementation that still routes through Core approval and audit.
 
 ### Files likely involved
 
-- `src/modules/broker.ts`
-- `src/modules/types.ts`
-- `src/modules/permissions.ts`
+- `src/core/modules/broker.ts`
+- `src/core/modules/types.ts`
+- `src/core/modules/permissions.ts`
 - `src/tools/registry.ts`
 - `src/tools/`
 - `src/security/approval.ts`
-- `src/modules/audit.ts`
+- `src/core/modules/audit.ts`
 - `scripts/verify-modules.ts`
 
 ### Deliverables
@@ -157,11 +157,11 @@ breaking the repo's security posture.
 
 ### Files likely involved
 
-- `src/modules/broker.ts`
-- `src/modules/types.ts`
-- `src/modules/permissions.ts`
+- `src/core/modules/broker.ts`
+- `src/core/modules/types.ts`
+- `src/core/modules/permissions.ts`
 - `src/tools/`
-- `src/modules/audit.ts`
+- `src/core/modules/audit.ts`
 - `scripts/verify-modules.ts`
 - maybe `src/config.ts`
 
@@ -207,13 +207,13 @@ run out-of-process and still flow through the Core security model.
 
 ### Files likely involved
 
-- `src/modules/manifest.ts`
-- `src/modules/loader.ts`
-- `src/modules/types.ts`
+- `src/core/modules/manifest.ts`
+- `src/core/modules/loader.ts`
+- `src/core/modules/types.ts`
 - `src/tools/registry.ts`
-- `src/modules/audit.ts`
+- `src/core/modules/audit.ts`
 - `src/config.ts`
-- new MCP-specific files under `src/modules/` or `src/mcp/`
+- new MCP-specific files under `src/core/modules/` or `src/mcp/`
 - `scripts/verify-modules.ts`
 
 ### Deliverables
@@ -257,12 +257,12 @@ drifting into an overbuilt policy engine.
 
 ### Files likely involved
 
-- `src/modules/permissions.ts`
-- `src/modules/manifest.ts`
-- `src/modules/broker.ts`
+- `src/core/modules/permissions.ts`
+- `src/core/modules/manifest.ts`
+- `src/core/modules/broker.ts`
 - `src/tools/registry.ts`
 - `src/security/approval.ts`
-- `src/modules/audit.ts`
+- `src/core/modules/audit.ts`
 - `DESIGN.md`
 - `scripts/verify-modules.ts`
 

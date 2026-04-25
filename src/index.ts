@@ -19,7 +19,7 @@ import {
 } from "./player2.js";
 import { setActiveProfile, loadPersonality } from "./agent.js";
 import { getToolCount } from "./tools/registry.js";
-import { loadModules, stopAllMcpHosts } from "./modules/loader.js";
+import { loadModules, stopAllMcpHosts } from "./core/modules/loader.js";
 import { initDatabase, closeDatabase } from "./memory/index.js";
 import { readModuleMemory, writeModuleMemory } from "./memory/module-store.js";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
@@ -240,7 +240,7 @@ async function boot(): Promise<void> {
     }
   );
   if (moduleResult.loaded.length === 0 && moduleResult.rejected.length === 0) {
-    console.log("   ℹ️  No modules found in src/extensions/");
+    console.log("   ℹ️  No modules found in src/modules/");
   } else {
     for (const m of moduleResult.loaded) {
       console.log(`   ✓ ${m.id} (+${m.toolCount} tool${m.toolCount === 1 ? "" : "s"})`);

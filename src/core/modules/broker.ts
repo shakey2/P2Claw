@@ -37,7 +37,7 @@ import {
   writeSubprocessEvent,
   type AuditEntry,
 } from "./audit.js";
-import { log as coreLog } from "../logger.js";
+import { log as coreLog } from "../../logger.js";
 import {
   runShell,
   runSpawn,

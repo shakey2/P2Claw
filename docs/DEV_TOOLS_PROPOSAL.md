@@ -6,7 +6,7 @@
 > Treat the implementation-oriented sections below as background, not as an
 > open proposal.
 > For current behavior, see `DESIGN.md` §4.7 and the shipped code in
-> `src/extensions/dev-tools/`, `src/ui/debug.ts`, and the frontend handlers.
+> `src/modules/dev-tools/`, `src/ui/debug.ts`, and the frontend handlers.
 
 ---
 
@@ -65,10 +65,10 @@ returns "unknown command").
 
 ### 3.1 Shape
 
-A new first-party module at `src/extensions/dev-tools/` with:
+A new first-party module at `src/modules/dev-tools/` with:
 
 - `manifest.json` — id `com.p2claw.dev-tools`, `firstParty: true`, added to
-  `FIRST_PARTY_ALLOWLIST` in [src/modules/manifest.ts](../src/modules/manifest.ts)
+  `FIRST_PARTY_ALLOWLIST` in [src/core/modules/manifest.ts](../src/core/modules/manifest.ts)
   (note the folder->id binding from the 2026-04-18 decision log entry —
   both the folder name and the expected id must go in the map).
 - `index.ts` — exports a module that registers the debug tools below.
@@ -79,7 +79,7 @@ A new first-party module at `src/extensions/dev-tools/` with:
 |---|---|---|
 | `debug_list_tools` | Returns the full registry: every tool's name, description, parameter schema, owner module id, and required permissions. Lets the LLM (and the dev reading the transcript) see exactly what's registered. | none (pure registry read) |
 | `debug_inspect_module` | Given a module id, returns its manifest: declared permissions, tools, runtime, firstParty status, entry. | none |
-| `debug_tail_audit` | Returns the last N entries from the **active audit log path** (resolved the same way [src/modules/audit.ts](../src/modules/audit.ts) does, including `P2CLAW_AUDIT_LOG_PATH`). N defaults to 20, hard-capped at e.g. 200. | none (reads the resolved audit log path directly) |
+| `debug_tail_audit` | Returns the last N entries from the **active audit log path** (resolved the same way [src/core/modules/audit.ts](../src/core/modules/audit.ts) does, including `P2CLAW_AUDIT_LOG_PATH`). N defaults to 20, hard-capped at e.g. 200. | none (reads the resolved audit log path directly) |
 | `debug_call_tool` | Given a target tool name and a structured `args` object, invokes that tool through the normal registry path and returns its raw result plus metadata (target owner, effective risk). It should reject `target === "debug_call_tool"` to prevent accidental recursion loops. | none declared on the manifest; per-call behavior mirrors the **target** tool |
 
 `debug_call_tool` is the interesting one. It *re-enters* the registry, which
@@ -192,7 +192,7 @@ it through [src/config.ts](../src/config.ts) as `config.devMode`.
 
 Two gates are driven by this flag:
 
-1. **Loader gate.** [src/modules/loader.ts](../src/modules/loader.ts) skips
+1. **Loader gate.** [src/core/modules/loader.ts](../src/core/modules/loader.ts) skips
    the `dev-tools` folder when `devMode === false`. Add a dedicated check
    so the dev-tools module is *never* registered in normal mode — its tools
    are not in the registry, its module id isn't loaded, the LLM cannot see
@@ -219,7 +219,7 @@ Two gates are driven by this flag:
 ### 5.3 Audit expectations
 
 - Do **not** assume the existing broker audit entries are enough. Today
-  [src/modules/audit.ts](../src/modules/audit.ts) records **permission
+  [src/core/modules/audit.ts](../src/core/modules/audit.ts) records **permission
   decisions**, not top-level tool invocations, and it has no `caller` field.
 - Add a small explicit debug-invocation event writer (same JSONL file, or a
   clearly-related sibling writer in the same module) for:
@@ -245,14 +245,14 @@ Referenced paths use the repo layout as of 2026-04-18.
 
 | Area | File(s) | What the planner will touch |
 |---|---|---|
-| New module | `src/extensions/dev-tools/manifest.json`, `src/extensions/dev-tools/index.ts` | Create the module itself. |
-| Allowlist | [src/modules/manifest.ts](../src/modules/manifest.ts) | Add `"dev-tools": "com.p2claw.dev-tools"` to `FIRST_PARTY_ALLOWLIST`. |
+| New module | `src/modules/dev-tools/manifest.json`, `src/modules/dev-tools/index.ts` | Create the module itself. |
+| Allowlist | [src/core/modules/manifest.ts](../src/core/modules/manifest.ts) | Add `"dev-tools": "com.p2claw.dev-tools"` to `FIRST_PARTY_ALLOWLIST`. |
 | Config / env | [src/config.ts](../src/config.ts), `.env.example` | Add `P2CLAW_DEV_MODE` boolean; thread `devMode` into Config. |
-| Loader | [src/modules/loader.ts](../src/modules/loader.ts) | Skip dev-tools folder when `devMode === false`. |
+| Loader | [src/core/modules/loader.ts](../src/core/modules/loader.ts) | Skip dev-tools folder when `devMode === false`. |
 | Registry access | [src/tools/registry.ts](../src/tools/registry.ts) | Add a public metadata accessor that returns registered tools with schema, owner module id, required permissions, and effective risk. `debug_call_tool` needs metadata lookup for the target tool and should reject self-recursion. |
-| Module metadata index | [src/modules/loader.ts](../src/modules/loader.ts) (and possibly a new small helper) | Loader currently only returns `{ id, toolCount }`. Add a retained runtime index of loaded module manifests / summaries so `debug_inspect_module` and `/debug modules` can answer without rescanning disk ad hoc. |
-| Broker | [src/modules/broker.ts](../src/modules/broker.ts) | No core gate change expected. The important change is **not** declaring every permission on dev-tools; target tools continue to use the existing grant path. |
-| Audit | [src/modules/audit.ts](../src/modules/audit.ts) | Add a shared "resolve audit log path" helper and an explicit debug-invocation event writer; do not just tack `debug: boolean` onto broker permission entries and call it done. |
+| Module metadata index | [src/core/modules/loader.ts](../src/core/modules/loader.ts) (and possibly a new small helper) | Loader currently only returns `{ id, toolCount }`. Add a retained runtime index of loaded module manifests / summaries so `debug_inspect_module` and `/debug modules` can answer without rescanning disk ad hoc. |
+| Broker | [src/core/modules/broker.ts](../src/core/modules/broker.ts) | No core gate change expected. The important change is **not** declaring every permission on dev-tools; target tools continue to use the existing grant path. |
+| Audit | [src/core/modules/audit.ts](../src/core/modules/audit.ts) | Add a shared "resolve audit log path" helper and an explicit debug-invocation event writer; do not just tack `debug: boolean` onto broker permission entries and call it done. |
 | Shared debug handler | `src/ui/debug.ts` (new) or inside [src/ui/core.ts](../src/ui/core.ts) | Parse subcommand, dispatch, return a structured result object each frontend can render safely. |
 | CLI frontend | [src/ui/cli.ts](../src/ui/cli.ts) | Add `case "/debug":` that calls shared handler when `devMode`. |
 | Telegram frontend | [src/bot.ts](../src/bot.ts) | Add `bot.command("debug", ...)` when `devMode`. |
@@ -307,10 +307,10 @@ Use this as the opening message when kicking off the planning session:
 > Read these files first, in this exact order:
 > 1. `docs/DEV_TOOLS_PROPOSAL.md` (read the whole file)
 > 2. `DESIGN.md` §4.7
-> 3. `src/modules/manifest.ts`
-> 4. `src/modules/loader.ts`
+> 3. `src/core/modules/manifest.ts`
+> 4. `src/core/modules/loader.ts`
 > 5. `src/tools/registry.ts`
-> 6. `src/modules/audit.ts`
+> 6. `src/core/modules/audit.ts`
 > 7. `src/security/approval.ts`
 > 8. `src/ui/cli.ts`
 > 9. `src/bot.ts`

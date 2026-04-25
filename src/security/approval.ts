@@ -11,7 +11,7 @@ import {
   writeApprovalEvent,
   type ApprovalOutcome,
   type ApprovalAttemptOutcome,
-} from "../modules/audit.js";
+} from "../core/modules/audit.js";
 
 export type { ApprovalOutcome, ApprovalAttemptOutcome };
 

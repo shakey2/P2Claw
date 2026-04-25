@@ -1,7 +1,7 @@
 /**
  * P2 Claw verify fixture — minimal MCP stdio echo server.
  *
- * This file is launched by src/extensions/mcp-echo/manifest.json and is only
+ * This file is launched by src/modules/mcp-echo/manifest.json and is only
  * loaded by the verify harness (`loadModules(..., { mcpVerify: true })`).
  */
 

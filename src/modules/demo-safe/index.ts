@@ -9,8 +9,8 @@
  *                   data/public/com.p2claw.demo-safe/intro.md.
  */
 
-import type { Module, ModuleContext, ModuleTool } from "../../modules/types.js";
-import { PermissionDeniedError } from "../../modules/types.js";
+import type { Module, ModuleContext, ModuleTool } from "../../core/modules/types.js";
+import { PermissionDeniedError } from "../../core/modules/types.js";
 
 interface PingArgs {
   note?: string;

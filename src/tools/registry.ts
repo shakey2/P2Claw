@@ -19,17 +19,17 @@ import {
   APPROVAL_TTL_MS,
 } from "../security/approval.js";
 import type { ToolDefinition, ExecuteToolOptions, ToolRisk } from "./tool-types.js";
-import { maxRisk, type PermissionId } from "../modules/permissions.js";
-import { runWithGrants } from "../modules/broker.js";
+import { maxRisk, type PermissionId } from "../core/modules/permissions.js";
+import { runWithGrants } from "../core/modules/broker.js";
 import {
   buildSubprocessApprovalSummary,
   DEFAULT_SUBPROCESS_OUTPUT_CAP_BYTES,
   DEFAULT_SUBPROCESS_TIMEOUT_MS,
-} from "../modules/subprocess.js";
+} from "../core/modules/subprocess.js";
 import {
   buildFsApprovalSummary,
   checkWorkspaceSandbox,
-} from "../modules/fs-policy.js";
+} from "../core/modules/fs-policy.js";
 
 export type { ToolDefinition, ToolRisk, ExecuteToolOptions } from "./tool-types.js";
 

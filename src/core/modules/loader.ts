@@ -1,7 +1,7 @@
 /**
  * P2 Claw — Module loader.
  *
- * Scans `src/extensions/*\/manifest.json`, validates each manifest, and then:
+ * Scans `src/modules/*\/manifest.json`, validates each manifest, and then:
  *   - runtime "inprocess": dynamic-imports entry and contributes tools.
  *   - runtime "mcp": starts a Core-owned MCP host and bridges its tools into
  *     the registry (permissions still come from the manifest).
@@ -21,30 +21,30 @@ import {
 } from "./manifest.js";
 import { createBroker, type BrokerCoreServices } from "./broker.js";
 import type { Module, ModuleTool, SettingFieldDescriptor, ModuleTab } from "./types.js";
-import { registerModuleTool } from "../tools/registry.js";
-import type { ToolDefinition } from "../tools/tool-types.js";
+import { registerModuleTool } from "../../tools/registry.js";
+import type { ToolDefinition } from "../../tools/tool-types.js";
 import {
   registerLoadedModule,
   summaryFromManifest,
   registerModuleTab,
 } from "./runtime-index.js";
-import { registerMcpTools } from "../mcp/bridge.js";
-import { McpServerHost } from "../mcp/host.js";
-import { registerMcpHost, stopAllMcpHosts } from "../mcp/registry.js";
+import { registerMcpTools } from "../../mcp/bridge.js";
+import { McpServerHost } from "../../mcp/host.js";
+import { registerMcpHost, stopAllMcpHosts } from "../../mcp/registry.js";
 import { seedSettingDefaults } from "./settings-store.js";
 
 /**
  * The in-tree `dev-tools` module is only scanned when the caller opts in
  * (P2CLAW_DEV_MODE=true surfaces via `loadModules(..., { devMode: true })`).
  * Kept here rather than inside the dev-tools folder itself so the gate
- * works even if `src/extensions/dev-tools/` is misconfigured.
+ * works even if `src/modules/dev-tools/` is misconfigured.
  */
 const DEV_TOOLS_FOLDER = "dev-tools";
 const MCP_VERIFY_FIXTURE_FOLDER = "mcp-echo";
 
 export interface LoadModulesOptions {
   /**
-   * When true, the loader includes `src/extensions/dev-tools/`. When false
+   * When true, the loader includes `src/modules/dev-tools/`. When false
    * (default) that folder is skipped entirely — its manifest is not parsed,
    * its tools are never registered, and it does not appear in the runtime
    * module index. See DESIGN.md §4.7.
@@ -63,11 +63,11 @@ export interface LoadModulesOptions {
 }
 
 /** Where Core looks for first-party modules. Resolved from this file's location. */
-function resolveExtensionsDir(): string {
+function resolveModulesDir(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  // This file lives at src/modules/loader.ts (or dist/modules/loader.js).
-  // Extensions live one level up in src/extensions (or dist/extensions).
-  return resolve(here, "..", "extensions");
+  // This file lives at src/core/modules/loader.ts (or dist/core/modules/loader.js).
+  // First-party modules live at src/modules (or dist/modules).
+  return resolve(here, "..", "..", "modules");
 }
 
 export interface LoadModulesResult {
@@ -140,7 +140,7 @@ function buildToolDefinition(
 }
 
 /**
- * Loads all first-party modules from `src/extensions/`. Returns a summary of
+ * Loads all first-party modules from `src/modules/`. Returns a summary of
  * successes and rejections; never throws.
  *
  * `options.devMode` gates the in-tree dev-tools module — see
@@ -153,16 +153,16 @@ export async function loadModules(
   const devMode = options.devMode === true;
   const mcpVerify = options.mcpVerify === true;
   const result: LoadModulesResult = { loaded: [], rejected: [] };
-  const extensionsDir = resolveExtensionsDir();
+  const modulesDir = resolveModulesDir();
 
-  if (!existsSync(extensionsDir)) {
+  if (!existsSync(modulesDir)) {
     return result;
   }
 
   let folders: string[];
   try {
-    folders = readdirSync(extensionsDir).filter((name) => {
-      const full = join(extensionsDir, name);
+    folders = readdirSync(modulesDir).filter((name) => {
+      const full = join(modulesDir, name);
       try {
         return statSync(full).isDirectory();
       } catch {
@@ -185,7 +185,7 @@ export async function loadModules(
     if (folder === MCP_VERIFY_FIXTURE_FOLDER && !mcpVerify) {
       continue;
     }
-    const folderPath = join(extensionsDir, folder);
+    const folderPath = join(modulesDir, folder);
     let manifest: ModuleManifest;
 
     try {

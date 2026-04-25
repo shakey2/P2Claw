@@ -7,14 +7,14 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import type { ToolDefinition } from "./tool-types.js";
-import { hashArgs, writeFsEvent } from "../modules/audit.js";
+import { hashArgs, writeFsEvent } from "../core/modules/audit.js";
 import {
   MAX_WORKSPACE_FILE_BYTES,
   buildFsApprovalSummary,
   checkWorkspaceSandbox,
   checkWriteBan,
   summarisePath,
-} from "../modules/fs-policy.js";
+} from "../core/modules/fs-policy.js";
 
 function isHardBanError(err: unknown): boolean {
   return err instanceof Error && err.message.startsWith("fs: hard ban");

@@ -12,7 +12,7 @@
  * Part H — Module Settings And HTML Contribution Hooks.
  */
 
-import { getDb, scheduleSave } from "../memory/db.js";
+import { getDb, scheduleSave } from "../../memory/db.js";
 
 /** Maximum byte length of a JSON-encoded settings value (same as module memory). */
 export const MAX_SETTING_VALUE_BYTES = 64 * 1024;

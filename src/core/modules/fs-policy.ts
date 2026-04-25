@@ -6,12 +6,18 @@
  */
 
 import { basename, dirname, isAbsolute, join, resolve, sep } from "path";
-import { fileURLToPath } from "url";
 import { resolveAuditLogPath } from "./audit.js";
 import { PermissionDeniedError } from "./types.js";
 
-/** Repo root (works under `tsx src/...` and `node dist/...`). */
-export const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+/**
+ * Repo root.
+ *
+ * We intentionally anchor to `process.cwd()` because:
+ * - All normal entrypoints run from the repo root (or packaged root).
+ * - The module-system code lives under `src/core/modules/`, so resolving
+ *   relative to `import.meta.url` is fragile when directory depth changes.
+ */
+export const PKG_ROOT = resolve(process.cwd());
 
 /** Root for user-facing sandboxed file tools. */
 export const WORKSPACE_ROOT = join(PKG_ROOT, "data", "workspace");

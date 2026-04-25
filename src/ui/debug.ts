@@ -26,14 +26,14 @@ import {
   getLoadedModule,
   listLoadedModules,
   type LoadedModuleSummary,
-} from "../modules/runtime-index.js";
+} from "../core/modules/runtime-index.js";
 import {
   hashArgs,
   resolveAuditLogPath,
   summariseArgs,
   writeDebugInvocation,
   type DebugInvocationResult,
-} from "../modules/audit.js";
+} from "../core/modules/audit.js";
 import {
   getPendingChallengeForChat,
   type PendingChallengeSnapshot,

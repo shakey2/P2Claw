@@ -66,7 +66,7 @@ export interface Config {
    * Developer diagnostics mode (`P2CLAW_DEV_MODE`). Default false.
    *
    * When true:
-   *   - the loader scans `src/extensions/dev-tools/` and registers its tools
+   *   - the loader scans `src/modules/dev-tools/` and registers its tools
    *     (debug_list_tools, debug_inspect_module, debug_tail_audit,
    *     debug_call_tool).
    *   - every frontend enables the `/debug` slash command.

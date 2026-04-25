@@ -9,8 +9,8 @@
  */
 
 import { log } from "../logger.js";
-import type { ModuleManifest } from "../modules/manifest.js";
-import { hashArgs, summariseArgs, writeMcpEvent, writeMcpLifecycle } from "../modules/audit.js";
+import type { ModuleManifest } from "../core/modules/manifest.js";
+import { hashArgs, summariseArgs, writeMcpEvent, writeMcpLifecycle } from "../core/modules/audit.js";
 import { McpClientError, McpStdioClient, type McpListedTool } from "./client.js";
 import type { McpOutcome, McpServerStatus } from "./types.js";
 

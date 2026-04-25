@@ -7,8 +7,8 @@
 import { existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import type { ToolDefinition } from "./tool-types.js";
-import { hashArgs, writeFsEvent } from "../modules/audit.js";
-import { checkWorkspaceSandbox, summarisePath } from "../modules/fs-policy.js";
+import { hashArgs, writeFsEvent } from "../core/modules/audit.js";
+import { checkWorkspaceSandbox, summarisePath } from "../core/modules/fs-policy.js";
 
 interface FileListEntry {
   name: string;

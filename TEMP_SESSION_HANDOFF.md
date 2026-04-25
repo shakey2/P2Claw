@@ -12,7 +12,7 @@
 Goal: let optional modules contribute capabilities/tools while **Core remains the only code path to any dangerous primitive** and the only approver of high-risk actions.
 
 - **Hybrid runtime**
-  - **First-party in-process** modules in `src/extensions/` — faster dev loop, gated by Core-provided capability broker, trust boundary is **code review**, not OS sandbox.
+  - **First-party in-process** modules in `src/modules/` — faster dev loop, gated by Core-provided capability broker, trust boundary is **code review**, not OS sandbox.
   - **Third-party MCP modules** (Phase 2+) — separate OS processes, OS-level isolation.
 - **Fixed broad permission catalog** owned by Core. No custom permission keys, no advisory sub-tags. Adding a category requires a Core release.
 - **Capability broker** is the only API a module ever sees. Modules never get raw `child_process`, `fs`, `net`, etc.
@@ -28,12 +28,12 @@ Goal: let optional modules contribute capabilities/tools while **Core remains th
 - Fixed permission catalog (~10 broad categories).
 - `manifest.json` schema + strict validator (reverse-DNS id, `runtime=inprocess` only, `firstParty` allowlist, permissions must be catalog subset, tools' `requires` must be declared).
 - In-process capability broker — per-permission methods that (1) check declared permission, (2) gate via TOTP when risk is high, (3) write audit log, (4) only then touch the primitive.
-- Module loader scans `src/extensions/*/manifest.json`, validates, loads, registers module-contributed tools with the existing tools registry.
+- Module loader scans `src/modules/*/manifest.json`, validates, loads, registers module-contributed tools with the existing tools registry.
 - Tools registry reuses the existing TOTP approval pipeline — one prompt per LLM tool call, no double-prompting.
 - `memory.read/write` now round-trips through module-scoped SQLite storage and `fs.read_public` is live under `data/public/<moduleId>/`.
 - High-risk broker primitives remain stubbed in-process; the gate + audit path is real, the dangerous primitive is not.
 - Two demo modules: `demo-safe` (safe permissions, sanity check) and `demo-high-risk` (declares `shell.execute`; broker still stubs actual shell execution).
-- Dev-mode diagnostics are implemented via `src/extensions/dev-tools/` and the shared `/debug` handler in `src/ui/debug.ts`.
+- Dev-mode diagnostics are implemented via `src/modules/dev-tools/` and the shared `/debug` handler in `src/ui/debug.ts`.
 
 ## Explicit non-goals for Phase 1
 
@@ -52,8 +52,8 @@ Goal: let optional modules contribute capabilities/tools while **Core remains th
 | Hosted chat + config pages | `src/ui/html/public/` (`index.html`, `config.html`, `assets/app.js`, `assets/config.js`, `assets/styles.css`) |
 | Boot / frontends | `src/index.ts`, `src/config.ts` |
 | Tools + TOTP | `src/tools/registry.ts`, `src/tools/tool-types.ts`, `src/security/approval.ts`, `src/security/totp.ts` |
-| Module framework (Phase 1) | `src/modules/permissions.ts`, `manifest.ts`, `broker.ts`, `loader.ts`, `audit.ts`, `types.ts` |
-| First-party modules | `src/extensions/<module-id>/manifest.json` + `index.ts` |
+| Module framework (Phase 1) | `src/core/modules/permissions.ts`, `manifest.ts`, `broker.ts`, `loader.ts`, `audit.ts`, `types.ts` |
+| First-party modules | `src/modules/<module-id>/manifest.json` + `index.ts` |
 | Audit log | `data/p2claw.audit.log` (append-only JSONL) |
 
 ## Intentional non-goals (unless you change them)

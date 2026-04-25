@@ -2,7 +2,7 @@
  * P2 Claw — MCP bridge/runtime shared types.
  */
 
-import type { PermissionId } from "../modules/permissions.js";
+import type { PermissionId } from "../core/modules/permissions.js";
 
 export type McpServerStatus = "starting" | "ready" | "crashed" | "stopped";
 

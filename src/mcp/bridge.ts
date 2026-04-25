@@ -6,7 +6,7 @@
  */
 
 import type OpenAI from "openai";
-import type { ModuleManifest } from "../modules/manifest.js";
+import type { ModuleManifest } from "../core/modules/manifest.js";
 import { registerModuleTool } from "../tools/registry.js";
 import type { McpListedTool } from "./client.js";
 import type { McpServerHost } from "./host.js";

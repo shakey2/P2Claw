@@ -21,11 +21,11 @@ import {
   validateManifest,
   ManifestValidationError,
   FIRST_PARTY_ALLOWLIST,
-} from "../src/modules/manifest.js";
-import { PERMISSION_CATALOG } from "../src/modules/permissions.js";
-import { createBroker, runWithGrants } from "../src/modules/broker.js";
-import { PermissionDeniedError } from "../src/modules/types.js";
-import { loadModules, stopAllMcpHosts } from "../src/modules/loader.js";
+} from "../src/core/modules/manifest.js";
+import { PERMISSION_CATALOG } from "../src/core/modules/permissions.js";
+import { createBroker, runWithGrants } from "../src/core/modules/broker.js";
+import { PermissionDeniedError } from "../src/core/modules/types.js";
+import { loadModules, stopAllMcpHosts } from "../src/core/modules/loader.js";
 import {
   getAllToolSchemas,
   executeTool,
@@ -35,8 +35,8 @@ import {
 import {
   listLoadedModules,
   getLoadedModule,
-} from "../src/modules/runtime-index.js";
-import { resolveAuditLogPath } from "../src/modules/audit.js";
+} from "../src/core/modules/runtime-index.js";
+import { resolveAuditLogPath } from "../src/core/modules/audit.js";
 import { McpServerHost } from "../src/mcp/host.js";
 import { initDatabase, closeDatabase } from "../src/memory/db.js";
 import {
@@ -157,9 +157,9 @@ const validBase = {
   tools: [] as unknown[],
 };
 const validFolder = "demo-safe";
-const validPath = join(process.cwd(), "src", "extensions", "demo-safe");
+const validPath = join(process.cwd(), "src", "modules", "demo-safe");
 const mcpFolder = "mcp-echo";
-const mcpPath = join(process.cwd(), "src", "extensions", "mcp-echo");
+const mcpPath = join(process.cwd(), "src", "modules", "mcp-echo");
 
 console.log("\n[1] Manifest validator");
 check("permission catalog count stays at 11 broad categories", () => {
@@ -186,7 +186,7 @@ check("rejects non-allowlisted firstParty folder", () =>
       validateManifest(
         validBase,
         "rogue-module",
-        join(process.cwd(), "src", "extensions", "rogue-module")
+        join(process.cwd(), "src", "modules", "rogue-module")
       ),
     "ERR_FIRST_PARTY_NOT_ALLOWLISTED"
   )
@@ -266,7 +266,7 @@ check("rejects dev-tools folder with spoofed id", () =>
           id: "com.evil.dev-tools",
         },
         "dev-tools",
-        join(process.cwd(), "src", "extensions", "dev-tools")
+        join(process.cwd(), "src", "modules", "dev-tools")
       ),
     "ERR_FIRST_PARTY_ID_MISMATCH"
   )
@@ -308,7 +308,7 @@ const highManifest = validateManifest(
     permissions: ["shell.execute", "process.spawn", "log.info"],
   },
   "demo-high-risk",
-  join(process.cwd(), "src", "extensions", "demo-high-risk")
+  join(process.cwd(), "src", "modules", "demo-high-risk")
 );
 const highCtx = createBroker(highManifest);
 
@@ -500,7 +500,7 @@ const demoSafeManifest = validateManifest(
     tools: [],
   },
   "demo-safe",
-  join(process.cwd(), "src", "extensions", "demo-safe")
+  join(process.cwd(), "src", "modules", "demo-safe")
 );
 const safeCtx = createBroker(demoSafeManifest, {
   memory: {
@@ -964,7 +964,7 @@ const fsManifest = validateManifest(
     tools: [],
   },
   "demo-high-risk",
-  join(process.cwd(), "src", "extensions", "demo-high-risk")
+  join(process.cwd(), "src", "modules", "demo-high-risk")
 );
 const fsCtx = createBroker(fsManifest);
 
@@ -1407,7 +1407,7 @@ const stubManifest = validateManifest(
     tools: [],
   },
   "demo-high-risk",
-  join(process.cwd(), "src", "extensions", "demo-high-risk")
+  join(process.cwd(), "src", "modules", "demo-high-risk")
 );
 const stubCtx = createBroker(stubManifest);
 

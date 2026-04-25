@@ -23,7 +23,7 @@ import {
 } from "fs";
 import { createHash } from "crypto";
 import { dirname, join } from "path";
-import type { McpEventEntry, McpLifecycleEntry } from "../mcp/types.js";
+import type { McpEventEntry, McpLifecycleEntry } from "../../mcp/types.js";
 
 const DEFAULT_LOG_PATH = join(process.cwd(), "data", "p2claw.audit.log");
 const MAX_AUDIT_SIZE_BYTES = 5 * 1024 * 1024;

@@ -27,7 +27,7 @@ There are two runtimes:
 
 ## 2) Module folder contract
 
-Each module lives under `src/extensions/<folder>/` and must include a `manifest.json`.
+Each module lives under `src/modules/<folder>/` and must include a `manifest.json`.
 
 ### In-process module minimum
 
@@ -250,7 +250,7 @@ All methods flow through broker gate checks, approvals, and audit writes.
 
 ## 5.4 Loader integration
 
-`loadModules(...)` scans `src/extensions/*`, validates each module independently, and isolates failures.
+`loadModules(...)` scans `src/modules/*`, validates each module independently, and isolates failures.
 
 Special gates:
 
@@ -279,7 +279,7 @@ For `runtime: "mcp"` modules:
 
 ## 6) Security validation pipeline (end-to-end)
 
-1. **Disk scan** of extension folders.
+1. **Disk scan** of module folders.
 2. **Manifest parse + strict validation** (schema, runtime rules, permissions, tools, settings, tabs).
 3. **Identity check** via folder->id allowlist binding.
 4. **Load/register**:
@@ -411,7 +411,7 @@ High-risk broker calls outside approved tool-call context are denied.
 ## 9.2 In-process `index.ts` template
 
 ```ts
-import type { Module } from "../../modules/types.js";
+import type { Module } from "../../core/modules/types.js";
 
 const mod: Module = {
   register({ ctx, contributeTool, contributeSettings, contributeTab }) {

@@ -1,7 +1,7 @@
 /**
  * P2 Claw — Module manifest schema + strict validator.
  *
- * Every first-party module in `src/extensions/<folder>/` must ship a
+ * Every first-party module in `src/modules/<folder>/` must ship a
  * `manifest.json` that passes this validator. Validation is intentionally
  * strict: any unexpected field shape or any permission/runtime outside the
  * Core-owned allowlist rejects the entire manifest.
@@ -83,11 +83,11 @@ export interface ModuleManifest {
 }
 
 /**
- * Folders inside `src/extensions/` that are allowed to set `firstParty: true`,
+ * Folders inside `src/modules/` that are allowed to set `firstParty: true`,
  * each bound to the exact reverse-DNS module id we expect that folder to ship.
  *
  * Binding the folder to the id closes a practical spoof: without it, anyone
- * dropping arbitrary code into `src/extensions/demo-safe/` could claim any
+ * dropping arbitrary code into `src/modules/demo-safe/` could claim any
  * module id they wanted (e.g. `com.evil.impostor`) and still pass first-party
  * validation, muddying audit logs and any future policy decisions keyed off
  * `moduleId`. With the binding, `folderName -> id` is 1:1 and authoritative.
@@ -141,7 +141,7 @@ function requireString(obj: Record<string, unknown>, field: string): string {
 
 /**
  * Validates a parsed manifest object and returns a typed ModuleManifest.
- * `folderName` is the basename of the module's folder in `src/extensions/`;
+ * `folderName` is the basename of the module's folder in `src/modules/`;
  * used to enforce the firstParty allowlist.
  * `folderPath` is the absolute path of the module folder; used to validate
  * that `entry` resolves inside it.

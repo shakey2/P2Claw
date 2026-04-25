@@ -6,7 +6,7 @@
  * shell primitive now runs a real subprocess with strict Core guardrails.
  */
 
-import type { Module, ModuleContext, ModuleTool } from "../../modules/types.js";
+import type { Module, ModuleContext, ModuleTool } from "../../core/modules/types.js";
 
 interface ShellArgs {
   cmd?: unknown;

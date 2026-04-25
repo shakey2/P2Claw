@@ -25,7 +25,7 @@
  *     recursion), and we have no use case that requires it.
  */
 
-import type { Module, ModuleContext, ModuleTool } from "../../modules/types.js";
+import type { Module, ModuleContext, ModuleTool } from "../../core/modules/types.js";
 import {
   executeTool,
   getRegisteredTool,
@@ -37,14 +37,14 @@ import {
 import {
   getLoadedModule,
   listLoadedModules,
-} from "../../modules/runtime-index.js";
+} from "../../core/modules/runtime-index.js";
 import {
   resolveAuditLogPath,
   writeDebugInvocation,
   hashArgs,
   summariseArgs,
   type DebugInvocationResult,
-} from "../../modules/audit.js";
+} from "../../core/modules/audit.js";
 import { existsSync, readFileSync } from "fs";
 
 const CALLER_ID = "com.p2claw.dev-tools";

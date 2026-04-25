@@ -34,17 +34,17 @@ import {
   getNavTabs,
   getModulesWithSettings,
   getRegisteredTab,
-} from "../modules/runtime-index.js";
+} from "../core/modules/runtime-index.js";
 import {
   readAllModuleSettings,
   writeModuleSetting,
-} from "../modules/settings-store.js";
+} from "../core/modules/settings-store.js";
 import {
   validateSettingValue,
   coerceSettingValue,
-} from "../modules/settings-schema.js";
-import { writeSettingsEvent } from "../modules/audit.js";
-import type { TabContentBlock } from "../modules/types.js";
+} from "../core/modules/settings-schema.js";
+import { writeSettingsEvent } from "../core/modules/audit.js";
+import type { TabContentBlock } from "../core/modules/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "html", "public");

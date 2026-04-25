@@ -237,11 +237,11 @@ src/
 │   ├── file-read.ts      # Safe workspace file read (data/workspace)
 │   ├── file-write.ts     # High-risk workspace file write (TOTP-gated)
 │   └── file-list.ts      # Safe workspace directory listing
-├── modules/              # Module framework (DESIGN.md §4.7)
+├── core/modules/         # Module framework (DESIGN.md §4.7)
 │   ├── permissions.ts    # Fixed broad permission catalog (Core-owned)
 │   ├── manifest.ts       # Strict manifest.json validator (inprocess + mcp)
 │   ├── broker.ts         # Capability broker (ModuleContext factory)
-│   ├── loader.ts         # Scans src/extensions/*, validates, registers tools
+│   ├── loader.ts         # Scans src/modules/*, validates, registers tools
 │   ├── audit.ts          # Append-only JSONL decision log (data/p2claw.audit.log)
 │   ├── types.ts          # Shared Module / ModuleContext / ModuleTool types
 │   ├── subprocess.ts     # Core subprocess execution (timeout, output cap, env allowlist)
@@ -253,7 +253,7 @@ src/
 │   ├── bridge.ts         # MCP-to-registry tool bridge
 │   ├── registry.ts       # Active MCP host registry + shutdown helper
 │   └── types.ts          # Shared MCP types (lifecycle, event entries)
-├── extensions/           # First-party modules (allowlisted)
+├── modules/              # First-party modules (allowlisted)
 │   ├── demo-safe/        # Demo module using only safe permissions
 │   ├── demo-high-risk/   # Demo module exercising real shell.execute via broker
 │   ├── dev-tools/        # Developer diagnostics (gated by P2CLAW_DEV_MODE)
