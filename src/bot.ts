@@ -23,6 +23,7 @@ import { createAgentCore } from "./ui/core.js";
 import {
   tryApproveWithTotp,
   tryApprovePendingForChat,
+  selectApprovalOption,
   cancelPendingForChat,
   hasPendingApprovalForChat,
 } from "./security/approval.js";
@@ -337,16 +338,27 @@ export function createBot(config: Config): Bot {
       }
       const short = text.match(/^APPROVE\s+(\d{6})\s*$/i);
       const full = text.match(/^APPROVE\s+([a-f0-9]{8})\s+(\d{6})\s*$/i);
+      const optioned = text.match(/^APPROVE\s+([a-f0-9]{8})\s+(\d+)(?:\s+(\d{6}))?\s*$/i);
       let result;
       if (full) {
         result = tryApproveWithTotp(chatId, full[1]!.toLowerCase(), full[2]!, secret);
         console.log(`   TOTP approval attempt challenge=${full[1]!.toLowerCase()} ok=${result.ok}`);
+      } else if (optioned) {
+        result = selectApprovalOption(
+          chatId,
+          optioned[1]!.toLowerCase(),
+          Number(optioned[2]) - 1,
+          secret,
+          optioned[3]
+        );
+        console.log(`   Approval option attempt challenge=${optioned[1]!.toLowerCase()} option=${optioned[2]} ok=${result.ok}`);
       } else if (short) {
         result = tryApprovePendingForChat(chatId, short[1]!, secret);
         console.log(`   TOTP approval attempt (APPROVE code) ok=${result.ok}`);
       } else {
         await ctx.reply(
           "Send only the 6-digit code from your authenticator, or:\n" +
+            "APPROVE <8-char-id> <option> [code]\n" +
             "APPROVE <8-char-id> <code>\n" +
             "(Check the pending message for the id if you use the long form.)"
         );

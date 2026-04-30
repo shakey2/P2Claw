@@ -3,8 +3,9 @@
  */
 
 import type OpenAI from "openai";
+import type { PermissionRisk } from "../core/modules/permissions.js";
 
-export type ToolRisk = "safe" | "high";
+export type ToolRisk = PermissionRisk | "high";
 
 export interface ToolDefinition {
   schema: OpenAI.Chat.Completions.ChatCompletionTool;

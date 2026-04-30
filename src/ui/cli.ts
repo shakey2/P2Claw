@@ -21,6 +21,7 @@ import { getToolCount } from "../tools/registry.js";
 import { getMemoryCount, listMemories } from "../memory/index.js";
 import {
   tryApprovePendingForChat,
+  selectApprovalOption,
   cancelPendingForChat,
   hasPendingApprovalForChat,
 } from "../security/approval.js";
@@ -152,15 +153,35 @@ function buildCliApprovalHook(
       return;
     }
     while (hasPendingApprovalForChat(sessionId)) {
-      const raw = await ask(rl, "Enter 6-digit code or CANCEL to abort: ");
-      if (/^cancel$/i.test(raw.trim())) {
+      const raw = await ask(rl, "Enter APPROVE <id> <option> [code], 6-digit code, or CANCEL: ");
+      const trimmed = raw.trim();
+      if (/^cancel$/i.test(trimmed)) {
         const r = cancelPendingForChat(sessionId);
         console.log(r.ok ? "Cancelled." : `Could not cancel: ${r.message}`);
         return;
       }
+      const full = trimmed.match(/^APPROVE\s+([a-f0-9]{8})\s+(\d{6})\s*$/i);
+      const optioned = trimmed.match(/^APPROVE\s+([a-f0-9]{8})\s+(\d+)(?:\s+(\d{6}))?\s*$/i);
+      if (full || optioned) {
+        const result = full
+          ? selectApprovalOption(sessionId, full[1]!.toLowerCase(), 0, secret, full[2])
+          : selectApprovalOption(
+              sessionId,
+              optioned![1]!.toLowerCase(),
+              Number(optioned![2]) - 1,
+              secret,
+              optioned![3]
+            );
+        if (result.ok) {
+          console.log("Approved.");
+          return;
+        }
+        console.log(`Not approved: ${result.message} Try again or type CANCEL.`);
+        continue;
+      }
       const code = normalizeCode(raw);
       if (!/^\d{6}$/.test(code)) {
-        console.log("Expected a 6-digit code or CANCEL. Try again.");
+        console.log("Expected an APPROVE command, 6-digit code, or CANCEL. Try again.");
         continue;
       }
       const result = tryApprovePendingForChat(sessionId, code, secret);

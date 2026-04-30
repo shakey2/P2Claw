@@ -9,9 +9,13 @@ import { createHash, randomBytes } from "crypto";
 import { verifyTotp } from "./totp.js";
 import {
   writeApprovalEvent,
+  writeCapabilityEvent,
   type ApprovalOutcome,
   type ApprovalAttemptOutcome,
 } from "../core/modules/audit.js";
+import { getPermission, isWhitelistable, type PermissionId, type PermissionRisk } from "../core/modules/permissions.js";
+import { createCapability } from "./capability-store.js";
+import type { CapabilityScope, GrantMethod } from "./capability-types.js";
 
 export type { ApprovalOutcome, ApprovalAttemptOutcome };
 
@@ -25,12 +29,30 @@ export interface Challenge {
   toolName: string;
   payloadHash: string;
   summary: string;
+  args: Record<string, unknown>;
+  risk: PermissionRisk;
+  permission?: PermissionId;
+  approvalOptions: ApprovalOption[];
+  scopeWarning?: string;
   expiresAt: number;
   status: ChallengeStatus;
 }
 
 interface CreateChallengeOptions {
   summaryOverride?: string;
+  risk?: PermissionRisk;
+  permission?: PermissionId;
+  approvalOptions?: ApprovalOption[];
+}
+
+export interface ApprovalOption {
+  label: string;
+  scope: CapabilityScope;
+  requiresTotp: boolean;
+  grantMethod: GrantMethod;
+  durationLabel: string;
+  expiresAt: string | null;
+  persistent: boolean;
 }
 
 const challenges = new Map<string, Challenge>();
@@ -64,9 +86,12 @@ export function hasPendingApprovalForChat(chatId: number): boolean {
 export interface PendingChallengeSnapshot {
   challengeId: string;
   toolName: string;
+  risk: PermissionRisk;
   /** Length of the canonical summary in characters (never the summary itself). */
   summaryLength: number;
   expiresAt: number;
+  approvalOptions: ApprovalOption[];
+  scopeWarning?: string;
 }
 
 export function getPendingChallengeForChat(
@@ -78,8 +103,11 @@ export function getPendingChallengeForChat(
       return {
         challengeId: id,
         toolName: ch.toolName,
+        risk: ch.risk,
         summaryLength: ch.summary.length,
         expiresAt: ch.expiresAt,
+        approvalOptions: ch.approvalOptions,
+        scopeWarning: ch.scopeWarning,
       };
     }
   }
@@ -162,6 +190,139 @@ function makeChallengeId(): string {
   return randomBytes(4).toString("hex");
 }
 
+function scopeFromArgs(args: Record<string, unknown>): CapabilityScope {
+  const pathValue = firstString(args, ["abs", "path", "rel_path", "file", "filename"]);
+  if (pathValue) {
+    return { type: "file", path: pathValue };
+  }
+  const command = firstString(args, ["cmd", "command"]);
+  if (command) {
+    return { type: "session", command };
+  }
+  return { type: "session" };
+}
+
+function firstString(args: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function in24HoursIso(): string {
+  return new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
+}
+
+export function computeApprovalOptions(
+  _toolName: string,
+  args: Record<string, unknown>,
+  risk: PermissionRisk,
+  permission?: PermissionId
+): ApprovalOption[] {
+  if (risk === "safe") return [];
+
+  const baseScope = scopeFromArgs(args);
+  const canCreateCapability = Boolean(permission && isWhitelistable(permission));
+  const onceRequiresTotp = risk === "dangerous" || risk === "critical";
+  const options: ApprovalOption[] = [
+    {
+      label: "Approve once",
+      scope: { type: "once" },
+      requiresTotp: onceRequiresTotp,
+      grantMethod: "approve_once",
+      durationLabel: "once",
+      expiresAt: null,
+      persistent: false,
+    },
+  ];
+
+  if (!canCreateCapability || risk === "critical") {
+    return options;
+  }
+
+  if (risk === "medium") {
+    options.push(
+      {
+        label: `Approve for ${describeScope(baseScope)} - session`,
+        scope: baseScope,
+        requiresTotp: false,
+        grantMethod: "approve_scoped",
+        durationLabel: "session",
+        expiresAt: null,
+        persistent: false,
+      },
+      {
+        label: `Approve for ${describeScope(baseScope)} - 24 hours`,
+        scope: baseScope,
+        requiresTotp: false,
+        grantMethod: "approve_persistent",
+        durationLabel: "24 hours",
+        expiresAt: in24HoursIso(),
+        persistent: true,
+      }
+    );
+    return options;
+  }
+
+  options.push(
+    {
+      label: `Approve for ${describeScope(baseScope)} - session`,
+      scope: baseScope,
+      requiresTotp: true,
+      grantMethod: "approve_scoped",
+      durationLabel: "session",
+      expiresAt: null,
+      persistent: false,
+    },
+    {
+      label: `Approve for ${describeScope(baseScope)} - 24 hours`,
+      scope: baseScope,
+      requiresTotp: true,
+      grantMethod: "approve_persistent",
+      durationLabel: "24 hours",
+      expiresAt: in24HoursIso(),
+      persistent: true,
+    },
+    {
+      label: `Approve for ${describeScope(baseScope)} - permanently`,
+      scope: baseScope,
+      requiresTotp: true,
+      grantMethod: "approve_persistent",
+      durationLabel: "permanent",
+      expiresAt: null,
+      persistent: true,
+    }
+  );
+  return options;
+}
+
+function describeScope(scope: CapabilityScope): string {
+  if (scope.path) return scope.path;
+  if (scope.pattern) return scope.pattern;
+  if (scope.command) return scope.command;
+  if (scope.type === "project") return "the project";
+  return "this session";
+}
+
+function computeScopeWarning(options: ApprovalOption[]): string | undefined {
+  const broad = options.find((option) =>
+    option.scope.type === "folder" ||
+    option.scope.type === "project" ||
+    option.scope.type === "session"
+  );
+  if (!broad) return undefined;
+  if (broad.scope.type === "project") {
+    return "This grants access to the entire project directory.";
+  }
+  if (broad.scope.type === "folder") {
+    return `This grants access to ${describeScope(broad.scope)}.`;
+  }
+  return "This grants access for the rest of this running session.";
+}
+
 /**
  * Registers a pending challenge. Caller must await waitForApproval + send UI prompt.
  */
@@ -185,12 +346,21 @@ export function createChallenge(
     options.summaryOverride.trim().length > 0
       ? options.summaryOverride.trim().slice(0, 280)
       : fallbackSummary;
+  const risk = options?.risk ?? "dangerous";
+  const approvalOptions =
+    options?.approvalOptions ??
+    computeApprovalOptions(toolName, args, risk, options?.permission);
 
   challenges.set(challengeId, {
     chatId,
     toolName,
     payloadHash,
     summary,
+    args,
+    risk,
+    permission: options?.permission,
+    approvalOptions,
+    scopeWarning: computeScopeWarning(approvalOptions),
     expiresAt: Date.now() + APPROVAL_TTL_MS,
     status: "pending",
   });
@@ -258,6 +428,16 @@ export function tryApproveWithTotp(
   totpCode: string,
   secretBase32: string
 ): { ok: boolean; message: string } {
+  return selectApprovalOption(chatId, challengeId, 0, secretBase32, totpCode);
+}
+
+export function selectApprovalOption(
+  chatId: number,
+  challengeId: string,
+  optionIndex: number,
+  secretBase32?: string,
+  totpCode?: string
+): { ok: boolean; message: string } {
   const id = challengeId.trim().toLowerCase();
   const ch = challenges.get(id);
   if (!ch) {
@@ -275,15 +455,68 @@ export function tryApproveWithTotp(
     return { ok: false, message: "Challenge already completed." };
   }
 
-  if (!verifyTotp(secretBase32, totpCode)) {
-    // Non-terminal: the challenge stays pending so the user may retry within TTL.
-    writeApprovalEvent({
-      kind: "approval_event",
-      toolName: ch.toolName,
-      challengeId: id,
-      outcome: "bad_code",
+  const selected = ch.approvalOptions[optionIndex];
+  if (!selected) {
+    return { ok: false, message: "Unknown approval option." };
+  }
+
+  if (selected.requiresTotp) {
+    if (!secretBase32?.trim() || !totpCode?.trim()) {
+      return { ok: false, message: "This approval option requires an authenticator code." };
+    }
+    if (!verifyTotp(secretBase32, totpCode)) {
+      // Non-terminal: the challenge stays pending so the user may retry within TTL.
+      writeApprovalEvent({
+        kind: "approval_event",
+        toolName: ch.toolName,
+        challengeId: id,
+        outcome: "bad_code",
+      });
+      return { ok: false, message: "Invalid authenticator code." };
+    }
+  }
+
+  if (selected.grantMethod !== "approve_once") {
+    if (!ch.permission) {
+      return { ok: false, message: "This challenge cannot create a saved capability." };
+    }
+    const permission = getPermission(ch.permission);
+    if (!permission || !isWhitelistable(ch.permission)) {
+      writeCapabilityEvent({
+        kind: "capability_event",
+        operation: "rejected_scope",
+        capabilityId: "",
+        tool: ch.toolName,
+        permission: ch.permission,
+        scopeType: selected.scope.type,
+        scopePath: selected.scope.path ?? selected.scope.pattern ?? selected.scope.command,
+        persistent: selected.persistent,
+        grantMethod: selected.grantMethod,
+      });
+      return { ok: false, message: "This permission cannot be saved as a capability." };
+    }
+    const capability = createCapability({
+      id: "",
+      tool: ch.toolName,
+      permission: ch.permission,
+      scope: selected.scope,
+      riskLevel: permission.riskLevel,
+      createdAt: "",
+      expiresAt: selected.expiresAt,
+      persistent: selected.persistent,
+      grantedVia: selected.grantMethod,
     });
-    return { ok: false, message: "Invalid authenticator code." };
+    writeCapabilityEvent({
+      kind: "capability_event",
+      operation: "created",
+      capabilityId: capability.id,
+      tool: capability.tool,
+      permission: capability.permission,
+      scopeType: capability.scope.type,
+      scopePath: capability.scope.path ?? capability.scope.pattern ?? capability.scope.command,
+      persistent: capability.persistent,
+      grantMethod: capability.grantedVia,
+    });
   }
 
   ch.status = "approved";
@@ -301,7 +534,7 @@ export function tryApproveWithTotp(
     challenges.delete(id);
   }
 
-  return { ok: true, message: "Approved." };
+  return { ok: true, message: `Approved (${selected.durationLabel}).` };
 }
 
 /**

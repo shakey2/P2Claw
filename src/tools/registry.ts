@@ -17,10 +17,13 @@ import {
   createChallenge,
   waitForApproval,
   APPROVAL_TTL_MS,
+  computeApprovalOptions,
 } from "../security/approval.js";
 import type { ToolDefinition, ExecuteToolOptions, ToolRisk } from "./tool-types.js";
-import { maxRisk, type PermissionId } from "../core/modules/permissions.js";
+import { getPermission, maxRisk, type PermissionId, type PermissionRisk } from "../core/modules/permissions.js";
 import { runWithGrants } from "../core/modules/broker.js";
+import { findMatchingCapability } from "../security/capability-store.js";
+import { writeCapabilityEvent } from "../core/modules/audit.js";
 import {
   buildSubprocessApprovalSummary,
   DEFAULT_SUBPROCESS_OUTPUT_CAP_BYTES,
@@ -107,11 +110,46 @@ export function getAllToolSchemas(): OpenAI.Chat.Completions.ChatCompletionTool[
 export function computeEffectiveRisk(def: ToolDefinition): ToolRisk {
   let risk: ToolRisk = def.risk ?? "safe";
   if (def.requiredPermissions && def.requiredPermissions.length > 0) {
-    if (maxRisk(def.requiredPermissions) !== "safe") {
-      risk = "high";
-    }
+    risk = maxRisk(def.requiredPermissions);
   }
   return risk;
+}
+
+function approvalRiskForTool(def: ToolDefinition): PermissionRisk {
+  if (def.requiredPermissions && def.requiredPermissions.length > 0) {
+    return maxRisk(def.requiredPermissions);
+  }
+  if (def.risk === "high") return "dangerous";
+  return def.risk ?? "safe";
+}
+
+function permissionsForTool(name: string, def: ToolDefinition): PermissionId[] {
+  const declared = (def.requiredPermissions ?? []).filter((permission): permission is PermissionId =>
+    Boolean(getPermission(permission))
+  );
+  if (declared.length > 0) return declared;
+  if (name === "file_write") return ["fs.write_any"];
+  return [];
+}
+
+function capabilityContextFromArgs(args: Record<string, unknown>): {
+  path?: string;
+  command?: string;
+  args: Record<string, unknown>;
+} {
+  const path = firstString(args, ["abs", "path", "rel_path", "file", "filename"]);
+  const command = firstString(args, ["cmd", "command"]);
+  return { path, command, args };
+}
+
+function firstString(args: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
 }
 
 function deepCloneJsonish<T>(value: T): T {
@@ -220,14 +258,36 @@ export async function executeTool(
   }
 
   const risk: ToolRisk = computeEffectiveRisk(tool);
-  const requires = tool.requiredPermissions ?? [];
+  const approvalRisk = approvalRiskForTool(tool);
+  const requires = permissionsForTool(name, tool);
 
-  if (risk === "high") {
+  if (approvalRisk !== "safe") {
+    const capabilityContext = capabilityContextFromArgs(args);
+    const allCovered =
+      requires.length > 0 &&
+      requires.every((permission) => {
+        const match = findMatchingCapability(name, permission, capabilityContext);
+        if (!match) return false;
+        writeCapabilityEvent({
+          kind: "capability_event",
+          operation: "matched",
+          capabilityId: match.id,
+          tool: name,
+          permission,
+          scopeType: match.scope.type,
+          scopePath: match.scope.path ?? match.scope.pattern ?? match.scope.command,
+          persistent: match.persistent,
+          grantMethod: match.grantedVia,
+        });
+        return true;
+      });
+
+    if (!allCovered) {
     const secret = opts.totpSecretBase32?.trim();
-    if (!secret) {
+    if ((approvalRisk === "dangerous" || approvalRisk === "critical") && !secret) {
       return JSON.stringify({
         error:
-          "High-risk tools require TOTP. Set TOTP_SECRET_BASE32 in .env and restart.",
+          "Approval for this action requires TOTP. Set TOTP_SECRET_BASE32 in .env and restart.",
       });
     }
     if (!opts.sendPendingApproval) {
@@ -238,7 +298,7 @@ export async function executeTool(
     }
     if (opts.chatId === undefined) {
       return JSON.stringify({
-        error: "chatId required for high-risk tools.",
+        error: "chatId required for approval-gated tools.",
       });
     }
 
@@ -271,15 +331,32 @@ export async function executeTool(
       }
     }
 
+    const primaryPermission = requires[0];
+    const approvalOptions = computeApprovalOptions(
+      name,
+      args,
+      approvalRisk,
+      primaryPermission
+    );
     const { challengeId, summary } = createChallenge(opts.chatId, name, args, {
       summaryOverride,
+      risk: approvalRisk,
+      permission: primaryPermission,
+      approvalOptions,
     });
 
+    const optionLines = approvalOptions
+      .map((option, index) => {
+        const totp = option.requiresTotp ? " (TOTP required)" : "";
+        return `[${index + 1}] ${option.label}${totp}`;
+      })
+      .join("\n");
     const prompt =
-      `High-risk action: ${name}\n` +
+      `Approval required (${approvalRisk}): ${name}\n` +
       `Bound payload: ${summary}\n\n` +
-      `Reply in this chat with only your 6-digit authenticator code (within ${Math.round(APPROVAL_TTL_MS / 1000)}s).\n` +
-      `Optional: APPROVE ${challengeId} <code> — same binding.`;
+      `${optionLines}\n\n` +
+      `Reply within ${Math.round(APPROVAL_TTL_MS / 1000)}s with APPROVE ${challengeId} <option> <code-if-required>.\n` +
+      `Compatibility: a bare 6-digit code or APPROVE ${challengeId} <code> approves option 1.`;
 
     const approvalPromise = waitForApproval(challengeId);
 
@@ -302,8 +379,9 @@ export async function executeTool(
               ? "superseded by a new request for this session"
               : approvalOutcome;
       return JSON.stringify({
-        error: `High-risk action not approved (${detail}).`,
+        error: `Approval-gated action not approved (${detail}).`,
       });
+    }
     }
   }
 

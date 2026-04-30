@@ -205,6 +205,37 @@ export function writeApprovalEvent(entry: ApprovalEventEntry): void {
   }
 }
 
+export interface CapabilityEventEntry {
+  kind: "capability_event";
+  operation: "created" | "revoked" | "matched" | "expired" | "rejected_scope";
+  capabilityId: string;
+  tool: string;
+  permission: string;
+  scopeType: string;
+  scopePath?: string;
+  persistent: boolean;
+  grantMethod?: string;
+}
+
+export function writeCapabilityEvent(entry: CapabilityEventEntry): void {
+  const path = resolveAuditLogPath();
+  try {
+    const dir = dirname(path);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    rotateIfNeeded(path);
+    const line =
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        ...entry,
+      }) + "\n";
+    appendFileSync(path, line, "utf-8");
+  } catch {
+    /* never crash on audit failure */
+  }
+}
+
 // ── Debug invocation events ─────────────────────────────────────
 //
 // The broker writes one `AuditEntry` per permission decision. That answers

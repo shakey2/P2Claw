@@ -30,6 +30,7 @@ import {
 } from "./permissions.js";
 import {
   writeAudit,
+  writeCapabilityEvent,
   writeSettingsEvent,
   hashArgs,
   summariseArgs,
@@ -55,6 +56,7 @@ import {
   containsPath,
   summarisePath,
 } from "./fs-policy.js";
+import { findMatchingCapability } from "../../security/capability-store.js";
 
 /** Root of per-module public read area: data/public/<moduleId>/ */
 const PUBLIC_ROOT = join(PKG_ROOT, "data", "public");
@@ -137,6 +139,30 @@ export function createBroker(
     });
   }
 
+  function capabilityContext(args?: unknown): {
+    path?: string;
+    command?: string;
+    args?: Record<string, unknown>;
+  } {
+    if (!args || typeof args !== "object") return {};
+    const record = args as Record<string, unknown>;
+    return {
+      path: firstString(record, ["abs", "path", "rel", "rel_path", "file"]),
+      command: firstString(record, ["cmd", "command"]),
+      args: record,
+    };
+  }
+
+  function firstString(record: Record<string, unknown>, keys: string[]): string | undefined {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim().length > 0) {
+        return value.trim();
+      }
+    }
+    return undefined;
+  }
+
   /**
    * Central gate every primitive goes through.
    * Throws PermissionDeniedError if the call is rejected.
@@ -161,6 +187,28 @@ export function createBroker(
 
     if (desc.riskLevel === "safe") {
       audit(permission, "granted", "safe_auto_grant", args);
+      return;
+    }
+
+    const capabilityTool = currentGrants()?.toolName ?? manifest.id;
+    const capability = findMatchingCapability(
+      capabilityTool,
+      permission,
+      capabilityContext(args)
+    );
+    if (capability) {
+      audit(permission, "granted", "capability_grant", args);
+      writeCapabilityEvent({
+        kind: "capability_event",
+        operation: "matched",
+        capabilityId: capability.id,
+        tool: capabilityTool,
+        permission,
+        scopeType: capability.scope.type,
+        scopePath: capability.scope.path ?? capability.scope.pattern ?? capability.scope.command,
+        persistent: capability.persistent,
+        grantMethod: capability.grantedVia,
+      });
       return;
     }
 
