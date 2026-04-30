@@ -1,11 +1,6 @@
 const log = document.getElementById("log");
 const form = document.getElementById("form");
 const input = document.getElementById("input");
-const approval = document.getElementById("approval");
-const approvalText = document.getElementById("approvalText");
-const approvalCode = document.getElementById("approvalCode");
-const approvalBtn = document.getElementById("approvalBtn");
-const approvalCancelBtn = document.getElementById("approvalCancelBtn");
 const botNameEl = document.getElementById("botName");
 const shutdownBtn = document.getElementById("shutdownBtn");
 const shutdownNote = document.getElementById("shutdownNote");
@@ -19,7 +14,7 @@ function setOnlineState(nextOnline) {
   const sendBtn = form ? form.querySelector('button[type="submit"]') : null;
   if (sendBtn) sendBtn.disabled = !isOnline;
 
-  const chatRoot = document.querySelector("main.chat");
+  const chatRoot = document.getElementById("chatPane");
   if (chatRoot) chatRoot.classList.toggle("offline", !isOnline);
 
   if (shutdownNote) {
@@ -178,37 +173,6 @@ function parseDebugInput(message) {
   return { subcommand: m[1] || "", rest: (m[3] || "").trim() };
 }
 
-approvalBtn.addEventListener("click", async () => {
-  const code = approvalCode.value.replace(/\s+/g, "");
-  approvalCode.value = "";
-  const feedbackEl = document.getElementById("approvalFeedback");
-  if (feedbackEl) feedbackEl.textContent = "";
-  try {
-    const r = await fetch("/api/approve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!j.ok && feedbackEl) {
-      feedbackEl.textContent = j.message || "Invalid code. Try again.";
-    }
-  } catch {
-    if (feedbackEl) feedbackEl.textContent = "Request failed. Try again.";
-  }
-});
-
-approvalCancelBtn.addEventListener("click", async () => {
-  approvalCode.value = "";
-  const feedbackEl = document.getElementById("approvalFeedback");
-  if (feedbackEl) feedbackEl.textContent = "";
-  try {
-    await fetch("/api/cancel", { method: "POST" });
-  } catch {
-    /* ignore */
-  }
-});
-
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!isOnline) return;
@@ -230,21 +194,7 @@ form.addEventListener("submit", async (e) => {
 
   const isDebug = /^\/debug(\s|$)/.test(message);
 
-  let poll = null;
   try {
-    poll = setInterval(async () => {
-      try {
-        const r = await fetch("/api/pending");
-        const j = await r.json();
-        if (j.prompt) {
-          approvalText.textContent = j.prompt;
-          approval.classList.remove("hidden");
-        }
-      } catch {
-        /* ignore */
-      }
-    }, 400);
-
     if (isDebug) {
       const { subcommand, rest } = parseDebugInput(message);
       const res = await fetch("/api/debug", {
@@ -279,11 +229,8 @@ form.addEventListener("submit", async (e) => {
       return;
     }
     append("assistant", data.reply || "");
-  } finally {
-    if (poll) clearInterval(poll);
-    approval.classList.add("hidden");
-    approvalText.textContent = "";
-    const feedbackEl = document.getElementById("approvalFeedback");
-    if (feedbackEl) feedbackEl.textContent = "";
+  } catch {
+    append("assistant", "Request failed — server may be down.");
+    setOnlineState(false);
   }
 });

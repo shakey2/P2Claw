@@ -25,8 +25,15 @@ import { checkHealth, getJoules } from "../player2.js";
 import { getToolCount } from "../tools/registry.js";
 import {
   tryApprovePendingForChat,
+  selectApprovalOption,
   cancelPendingForChat,
+  getPendingChallengeForChat,
 } from "../security/approval.js";
+import {
+  listCapabilities,
+  revokeCapability,
+  revokeAll,
+} from "../security/capability-store.js";
 import { requestGracefulShutdown } from "../graceful-shutdown.js";
 import { handleDebugCommand } from "./debug.js";
 import {
@@ -43,8 +50,9 @@ import {
   validateSettingValue,
   coerceSettingValue,
 } from "../core/modules/settings-schema.js";
-import { writeSettingsEvent } from "../core/modules/audit.js";
+import { writeSettingsEvent, resolveAuditLogPath } from "../core/modules/audit.js";
 import type { TabContentBlock } from "../core/modules/types.js";
+import { readFileSync } from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "html", "public");
@@ -467,15 +475,53 @@ export function createHtmlFrontend(config: Config): Frontend {
     try {
       if (pathname === "/api/pending" && req.method === "GET") {
         const p = pendingBySession.get(sessionId);
-        json(res, 200, { prompt: p?.prompt ?? null });
+        const challenge = getPendingChallengeForChat(sessionId);
+        json(res, 200, {
+          prompt: p?.prompt ?? null,
+          challenge: challenge
+            ? {
+                challengeId: challenge.challengeId,
+                toolName: challenge.toolName,
+                risk: challenge.risk,
+                expiresAt: challenge.expiresAt,
+                approvalOptions: challenge.approvalOptions,
+                scopeWarning: challenge.scopeWarning,
+              }
+            : null,
+        });
         return;
       }
 
       if (pathname === "/api/approve" && req.method === "POST") {
         if (!assertTrustedOrigin(req, res, config)) return;
         const body = await parseJsonBody(req);
-        const code = String(body.code ?? "").replace(/\s+/g, "");
         const secret = config.totpSecretBase32?.trim();
+        // New option-based approval: { challengeId, optionIndex, code? }
+        const challengeId = typeof body.challengeId === "string" ? body.challengeId.trim() : "";
+        const optionIndex = typeof body.optionIndex === "number" ? body.optionIndex : -1;
+        const code = String(body.code ?? "").replace(/\s+/g, "");
+
+        if (challengeId && optionIndex >= 0) {
+          // New multi-option approval path
+          const result = selectApprovalOption(
+            sessionId,
+            challengeId,
+            optionIndex,
+            secret ?? undefined,
+            code || undefined
+          );
+          if (result.ok) {
+            const pend = pendingBySession.get(sessionId);
+            if (pend) {
+              pendingBySession.delete(sessionId);
+              pend.resolve();
+            }
+          }
+          json(res, 200, { ok: result.ok, message: result.message });
+          return;
+        }
+
+        // Legacy 6-digit-code-only path (backward compat)
         if (!secret) {
           json(res, 400, { ok: false, error: "TOTP not configured" });
           return;
@@ -507,6 +553,76 @@ export function createHtmlFrontend(config: Config): Frontend {
           }
         }
         json(res, 200, { ok: result.ok, message: result.message });
+        return;
+      }
+
+      // ── Phase 4: Capability management APIs ─────────────────────
+
+      if (pathname === "/api/capabilities" && req.method === "GET") {
+        if (!assertTrustedOrigin(req, res, config)) return;
+        const caps = listCapabilities();
+        json(res, 200, {
+          capabilities: caps.map((c) => ({
+            id: c.id,
+            tool: c.tool,
+            permission: c.permission,
+            scopeType: c.scope.type,
+            scopePath: c.scope.path ?? c.scope.pattern ?? c.scope.command ?? null,
+            riskLevel: c.riskLevel,
+            createdAt: c.createdAt,
+            expiresAt: c.expiresAt,
+            persistent: c.persistent,
+            grantedVia: c.grantedVia,
+          })),
+        });
+        return;
+      }
+
+      if (pathname === "/api/capabilities/revoke" && req.method === "POST") {
+        if (!assertTrustedOrigin(req, res, config)) return;
+        const body = await parseJsonBody(req);
+        const id = typeof body.id === "string" ? body.id.trim() : "";
+        const all = body.all === true;
+        if (all) {
+          const count = revokeAll();
+          json(res, 200, { ok: true, revoked: count });
+          return;
+        }
+        if (!id) {
+          json(res, 400, { ok: false, error: "id required" });
+          return;
+        }
+        const revoked = revokeCapability(id);
+        json(res, 200, { ok: revoked, message: revoked ? "Revoked." : "Not found." });
+        return;
+      }
+
+      if (pathname === "/api/approval-history" && req.method === "GET") {
+        if (!assertTrustedOrigin(req, res, config)) return;
+        const entries: unknown[] = [];
+        try {
+          const logPath = resolveAuditLogPath();
+          const raw = readFileSync(logPath, "utf-8");
+          const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+          const capAndApprovalLines = lines
+            .map((l) => {
+              try {
+                return JSON.parse(l) as Record<string, unknown>;
+              } catch {
+                return null;
+              }
+            })
+            .filter(
+              (entry): entry is Record<string, unknown> =>
+                entry !== null &&
+                (entry.kind === "approval_event" || entry.kind === "capability_event")
+            );
+          // Return last 50
+          entries.push(...capAndApprovalLines.slice(-50));
+        } catch {
+          // File may not exist yet
+        }
+        json(res, 200, { entries });
         return;
       }
 

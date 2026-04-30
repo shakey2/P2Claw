@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>P2 Claw — Local chat</title>
+  <meta name="description" content="P2 Claw local AI assistant — chat, approve actions, and manage capabilities." />
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
 <body>
@@ -18,24 +19,52 @@
     </nav>
   </header>
 
-  <main class="chat">
-    <div id="log" class="log" aria-live="polite"></div>
-    <div id="approval" class="approval hidden">
-      <p id="approvalText"></p>
-      <label>6-digit code <input type="text" id="approvalCode" maxlength="10" autocomplete="one-time-code" /></label>
-      <span id="approvalFeedback" class="approval-feedback" aria-live="polite"></span>
-      <div class="approval-actions">
-        <button type="button" id="approvalBtn">Submit code</button>
-        <button type="button" id="approvalCancelBtn" class="btn-cancel">Cancel</button>
-      </div>
-    </div>
-    <form id="form" class="row">
-      <textarea id="input" rows="2" placeholder="Message…" required></textarea>
-      <button type="submit">Send</button>
-    </form>
-  </main>
+  <div class="split-pane">
+    <!-- Left pane: Chat -->
+    <main class="chat pane-chat" id="chatPane">
+      <div id="log" class="log" aria-live="polite"></div>
+      <form id="form" class="row">
+        <textarea id="input" rows="2" placeholder="Message…" required></textarea>
+        <button type="submit">Send</button>
+      </form>
+    </main>
+
+    <!-- Right pane: Approval Sidebar -->
+    <aside class="pane-sidebar" id="sidebar">
+      <!-- Section 1: Active Requests -->
+      <section class="sidebar-section" id="activeRequests">
+        <h2 class="sidebar-heading">Active Requests</h2>
+        <div id="approvalPanel" class="approval-panel empty-state">
+          <p class="empty-msg">No pending requests.</p>
+        </div>
+      </section>
+
+      <!-- Section 2: Active Capabilities -->
+      <section class="sidebar-section" id="activeCapabilities">
+        <h2 class="sidebar-heading">
+          Active Capabilities
+          <button type="button" id="revokeAllBtn" class="btn-revoke-all btn-quiet" title="Revoke all capabilities">Revoke All</button>
+        </h2>
+        <div id="capabilitiesList" class="capabilities-list">
+          <p class="empty-msg">No active capabilities.</p>
+        </div>
+      </section>
+
+      <!-- Section 3: Audit Feed -->
+      <section class="sidebar-section" id="auditFeed">
+        <h2 class="sidebar-heading">
+          Audit Feed
+          <button type="button" id="toggleAuditBtn" class="btn-quiet btn-toggle" title="Toggle audit feed">▼</button>
+        </h2>
+        <div id="auditList" class="audit-list collapsed">
+          <p class="empty-msg">No recent events.</p>
+        </div>
+      </section>
+    </aside>
+  </div>
 
   <script src="/assets/nav.js" defer></script>
   <script src="/assets/app.js" defer></script>
+  <script src="/assets/approval-panel.js" defer></script>
 </body>
 </html>

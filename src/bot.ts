@@ -51,6 +51,11 @@ import {
   parseDebugTail,
   type DebugResult,
 } from "./ui/debug.js";
+import {
+  listCapabilities,
+  revokeCapability,
+  revokeAll,
+} from "./security/capability-store.js";
 
 /**
  * Player2 TTS chunking: `/v1/tts/speak` fails on long text (often HTTP 500).
@@ -515,6 +520,7 @@ export function createBot(config: Config): Bot {
       `  /memories — List stored memories\n` +
       `  /compact — Summarize conversation history\n` +
       `  /voice — Configure voice output\n` +
+      `  /caps — Manage capabilities\n` +
       `  /totp_status — TOTP configured? (Level 4)\n` +
       `  /totp_enroll_help — Set up Google Authenticator\n` +
       `  /shutdown — Stop the bot safely\n` +
@@ -730,6 +736,50 @@ export function createBot(config: Config): Bot {
         `Older messages were summarized to free up context space.`
       );
     }
+  });
+
+  // ── /caps command — capability management ───────────────────
+  bot.command("caps", async (ctx) => {
+    const args = (ctx.match ?? "").trim();
+    const parts = args.split(/\s+/);
+    const sub = parts[0]?.toLowerCase();
+
+    if (sub === "revoke-all") {
+      const count = revokeAll();
+      await ctx.reply(`Revoked ${count} capability(ies).`);
+      return;
+    }
+
+    if (sub === "revoke" && parts.length > 1) {
+      const id = parts.slice(1).join(" ").trim();
+      const revoked = revokeCapability(id);
+      await ctx.reply(revoked ? `Revoked capability ${id}.` : `Capability ${id} not found.`);
+      return;
+    }
+
+    // Default: list
+    const caps = listCapabilities();
+    if (caps.length === 0) {
+      await ctx.reply("No active capabilities.");
+      return;
+    }
+    const lines = caps.map((cap) => {
+      const scope = cap.scope.path ?? cap.scope.pattern ?? cap.scope.command ?? cap.scope.type;
+      const expiry = cap.expiresAt
+        ? `expires ${new Date(cap.expiresAt).toISOString()}`
+        : cap.persistent ? "permanent" : "session";
+      return `• *${cap.tool}* [${cap.riskLevel}]\n  ${cap.permission} · scope=${scope}\n  ${expiry} · via=${cap.grantedVia}\n  id: \`${cap.id.slice(0, 8)}\``;
+    });
+    await ctx.reply(
+      `🔐 *Active Capabilities* (${caps.length})\n\n${lines.join("\n\n")}\n\nUse \`/caps revoke <id>\` or \`/caps revoke-all\`.`,
+      { parse_mode: "Markdown" }
+    ).catch(() => {
+      const plain = caps.map((cap) => {
+        const scope = cap.scope.path ?? cap.scope.pattern ?? cap.scope.command ?? cap.scope.type;
+        return `${cap.id.slice(0, 8)}  ${cap.tool}  [${cap.riskLevel}]  ${cap.permission}  scope=${scope}`;
+      });
+      return ctx.reply(`Active Capabilities (${caps.length}):\n${plain.join("\n")}\n\nUse /caps revoke <id> or /caps revoke-all.`);
+    });
   });
 
   // ── Text message handler ────────────────────────────────────

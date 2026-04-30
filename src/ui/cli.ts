@@ -27,6 +27,11 @@ import {
 } from "../security/approval.js";
 import { requestGracefulShutdown } from "../graceful-shutdown.js";
 import {
+  listCapabilities,
+  revokeCapability,
+  revokeAll,
+} from "../security/capability-store.js";
+import {
   handleDebugCommand,
   parseDebugTail,
   type DebugResult,
@@ -401,6 +406,7 @@ export function createCliFrontend(config: Config): Frontend {
           "  /compact           Summarize older conversation history",
           "  /clear             Clear conversation history (memories unaffected)",
           "  /cancel            Abort a pending TOTP approval request",
+          "  /caps [list|revoke|revoke-all]  Manage capabilities",
           "  /totp_status       Whether TOTP is configured",
           "  /totp_enroll_help  Set up Google Authenticator for high-risk tools",
           "  /shutdown          Graceful shutdown",
@@ -414,7 +420,40 @@ export function createCliFrontend(config: Config): Frontend {
         console.log(lines.join("\n"));
         return true;
       }
+      case "/caps": {
+        const sub = rest[0]?.toLowerCase();
+        if (sub === "revoke-all") {
+          const count = revokeAll();
+          console.log(`Revoked ${count} capability(ies).`);
+          return true;
+        }
+        if (sub === "revoke" && rest.length > 1) {
+          const id = rest.slice(1).join(" ").trim();
+          const revoked = revokeCapability(id);
+          console.log(revoked ? `Revoked capability ${id}.` : `Capability ${id} not found.`);
+          return true;
+        }
+        // Default: list
+        const caps = listCapabilities();
+        if (caps.length === 0) {
+          console.log("No active capabilities.");
+          return true;
+        }
+        console.log(`Active capabilities (${caps.length}):\n`);
+        for (const cap of caps) {
+          const scope = cap.scope.path ?? cap.scope.pattern ?? cap.scope.command ?? cap.scope.type;
+          const expiry = cap.expiresAt
+            ? `expires ${new Date(cap.expiresAt).toISOString()}`
+            : cap.persistent ? "permanent" : "session";
+          console.log(
+            `  ${cap.id.slice(0, 8)}  ${cap.tool}  [${cap.riskLevel}]  ${cap.permission}  scope=${scope}  ${expiry}  via=${cap.grantedVia}`
+          );
+        }
+        console.log(`\nUse /caps revoke <id> or /caps revoke-all.`);
+        return true;
+      }
       default: {
+
         if (cmd.startsWith("/")) {
           console.log(`Unknown command: ${cmd}`);
           if (args) void args;
