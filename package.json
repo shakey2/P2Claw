@@ -9,7 +9,8 @@
     "env:sync": "node scripts/env-sync.mjs",
     "start": "tsx src/index.ts",
     "build": "tsc",
-    "verify": "tsx scripts/verify-modules.ts"
+    "verify": "tsx scripts/verify-modules.ts",
+    "verify:capabilities": "tsx scripts/verify-capabilities.ts"
   },
   "keywords": [
     "telegram",

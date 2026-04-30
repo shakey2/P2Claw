@@ -7,14 +7,14 @@
  *
  * Risk levels:
  *   - "safe" : no user approval required; audit log still records grants.
- *   - "high" : must pass TOTP approval (src/security/approval.ts) before the
- *              broker dispatches the underlying primitive. High-risk grants
- *              are always written to the audit log.
+ *   - "medium" : approval required, but scoped persistence does not require TOTP.
+ *   - "dangerous" : TOTP required for persistent or broad scoped approval.
+ *   - "critical" : TOTP one-shot approval only; never whitelistable.
  *
  * See DESIGN.md §4.7 "Module framework (Phase 1)" for context.
  */
 
-export type PermissionRisk = "safe" | "high";
+export type PermissionRisk = "safe" | "medium" | "dangerous" | "critical";
 
 export interface PermissionDescriptor {
   readonly id: string;
@@ -58,33 +58,33 @@ export const PERMISSION_CATALOG = [
   },
   {
     id: "fs.read_private",
-    riskLevel: "high",
+    riskLevel: "medium",
     description:
       "Read arbitrary files on disk, including .env, user documents, and credentials.",
   },
   {
     id: "fs.write_any",
-    riskLevel: "high",
+    riskLevel: "dangerous",
     description: "Write anywhere on disk (create, overwrite, delete).",
   },
   {
     id: "shell.execute",
-    riskLevel: "high",
+    riskLevel: "dangerous",
     description: "Run a subprocess or shell command.",
   },
   {
     id: "process.spawn",
-    riskLevel: "high",
+    riskLevel: "dangerous",
     description: "Spawn a Node child process without invoking a shell.",
   },
   {
     id: "net.outbound",
-    riskLevel: "high",
+    riskLevel: "dangerous",
     description: "Make outbound network requests (HTTP, sockets, DNS lookups).",
   },
   {
     id: "credentials.read",
-    riskLevel: "high",
+    riskLevel: "critical",
     description:
       "Read resolved secrets — Player2 game key, Telegram bot token, or TOTP secret.",
   },
@@ -107,13 +107,27 @@ export function getPermission(id: string): PermissionDescriptor | undefined {
   return CATALOG_MAP.get(id);
 }
 
+const RISK_ORDER: Record<PermissionRisk, number> = {
+  safe: 0,
+  medium: 1,
+  dangerous: 2,
+  critical: 3,
+};
+
 /** Returns the highest risk level across the given permissions; "safe" if empty. */
 export function maxRisk(ids: readonly string[]): PermissionRisk {
+  let highest: PermissionRisk = "safe";
   for (const id of ids) {
     const p = CATALOG_MAP.get(id);
-    if (p?.riskLevel === "high") {
-      return "high";
+    if (p && RISK_ORDER[p.riskLevel] > RISK_ORDER[highest]) {
+      highest = p.riskLevel;
     }
   }
-  return "safe";
+  return highest;
+}
+
+/** Returns false for permissions that must never be satisfied by a saved capability. */
+export function isWhitelistable(permission: string): boolean {
+  const desc = CATALOG_MAP.get(permission);
+  return desc?.riskLevel !== "critical";
 }

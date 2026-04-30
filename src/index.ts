@@ -30,6 +30,14 @@ import { createHtmlFrontend } from "./ui/html.js";
 import type { Frontend } from "./ui/frontend.js";
 import { registerGracefulShutdown } from "./graceful-shutdown.js";
 import { drainPendingChallenges } from "./security/approval.js";
+import {
+  closeCoreSecurityDatabase,
+  initCoreSecurityDatabase,
+} from "./security/core-security-db.js";
+import {
+  clearSessionCapabilities,
+  loadPersistentCapabilities,
+} from "./security/capability-store.js";
 
 // ── Single-instance lock (prevents Telegram 409 conflict) ───────
 const LOCK_PATH = join(process.cwd(), "data", "p2claw.bot.lock");
@@ -213,6 +221,19 @@ async function boot(): Promise<void> {
     console.error("      Memory features will not work.");
   }
 
+  console.log("\n🔐 Initialising core security database...");
+  try {
+    await initCoreSecurityDatabase();
+    const capabilityCount = loadPersistentCapabilities();
+    console.log(
+      `   ✓ Loaded ${capabilityCount} persisted capability grant${capabilityCount === 1 ? "" : "s"}`
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`   ❌ Core security database init failed: ${msg}`);
+    console.error("      Persistent capability grants will not be available.");
+  }
+
   // ── Step 9: Load personality ──────────────────────────────────
   console.log("\n🎭 Loading personality...");
   loadPersonality();
@@ -292,6 +313,14 @@ async function boot(): Promise<void> {
       }
       closeDatabase();
       console.log("   ✓ Database saved");
+      const clearedCapabilities = clearSessionCapabilities();
+      if (clearedCapabilities > 0) {
+        console.log(
+          `   ✓ Cleared ${clearedCapabilities} session capability grant${clearedCapabilities === 1 ? "" : "s"}`
+        );
+      }
+      closeCoreSecurityDatabase();
+      console.log("   ✓ Core security database saved");
       try {
         await frontend.stop();
       } catch {

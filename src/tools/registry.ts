@@ -99,7 +99,7 @@ export function getAllToolSchemas(): OpenAI.Chat.Completions.ChatCompletionTool[
 }
 
 /**
- * Derives the effective risk for a tool: any high-risk permission promotes
+ * Derives the effective risk for a tool: any approval-gated permission promotes
  * the tool to `high`, regardless of its explicit `risk` field. Exported so
  * the dev-tools introspection surface reports the same value `executeTool`
  * actually enforces.
@@ -107,7 +107,7 @@ export function getAllToolSchemas(): OpenAI.Chat.Completions.ChatCompletionTool[
 export function computeEffectiveRisk(def: ToolDefinition): ToolRisk {
   let risk: ToolRisk = def.risk ?? "safe";
   if (def.requiredPermissions && def.requiredPermissions.length > 0) {
-    if (maxRisk(def.requiredPermissions) === "high") {
+    if (maxRisk(def.requiredPermissions) !== "safe") {
       risk = "high";
     }
   }
